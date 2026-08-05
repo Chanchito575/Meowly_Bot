@@ -1,27 +1,7 @@
 import os
-import threading
-from flask import Flask
 import discord
 from discord.ext import commands
 
-# --- SERVIDOR WEB ---
-app = Flask('')
-
-@app.route('/')
-def home():
-    return "Bot activo 24/7"
-
-def run_flask():
-    # Render asigna el puerto mediante la variable de entorno PORT (por defecto 8080)
-    port = int(os.environ.get("PORT", 8080))
-    app.run(host='0.0.0.0', port=port)
-
-def keep_alive():
-    t = threading.Thread(target=run_flask)
-    t.daemon = True
-    t.start()
-
-# --- CONFIGURACIÓN DEL BOT ---
 intents = discord.Intents.default()
 intents.message_content = True
 bot = commands.Bot(command_prefix='.', intents=intents)
@@ -56,11 +36,5 @@ async def crear_categorias(ctx, *, nombres: str):
 
     await ctx.send(f"✅ ¡Se crearon **{creadas}** categorías!")
 
-# --- INICIO DEL BOT ---
-if __name__ == "__main__":
-    token = os.environ.get("DISCORD_TOKEN")
-    if token:
-        keep_alive()
-        bot.run(token)
-    else:
-        print("❌ Error: No se encontró la variable DISCORD_TOKEN en Render.")
+token = os.environ.get("DISCORD_TOKEN")
+bot.run(token)
