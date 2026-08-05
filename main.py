@@ -4,15 +4,15 @@ from flask import Flask
 import discord
 from discord.ext import commands
 
-# --- SERVIDOR WEB DUMMY PARA RENDER ---
+# --- SERVIDOR WEB ---
 app = Flask('')
 
 @app.route('/')
 def home():
-    return "Bot de Discord activo 24/7!"
+    return "Bot activo 24/7"
 
 def run_flask():
-    # Render asigna automáticamente un puerto mediante la variable PORT
+    # Render asigna el puerto mediante la variable de entorno PORT (por defecto 8080)
     port = int(os.environ.get("PORT", 8080))
     app.run(host='0.0.0.0', port=port)
 
@@ -56,7 +56,11 @@ async def crear_categorias(ctx, *, nombres: str):
 
     await ctx.send(f"✅ ¡Se crearon **{creadas}** categorías!")
 
-# Arranca el servidor web en segundo plano y luego el bot
-keep_alive()
-token = os.environ.get("DISCORD_TOKEN")
-bot.run(token)
+# --- INICIO DEL BOT ---
+if __name__ == "__main__":
+    token = os.environ.get("DISCORD_TOKEN")
+    if token:
+        keep_alive()
+        bot.run(token)
+    else:
+        print("❌ Error: No se encontró la variable DISCORD_TOKEN en Render.")
