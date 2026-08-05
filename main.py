@@ -36,5 +36,10 @@ async def crear_categorias(ctx, *, nombres: str):
 
     await ctx.send(f"✅ ¡Se crearon **{creadas}** categorías!")
 
+# --- VALIDACIÓN DE SEGURIDAD PARA EL TOKEN ---
 token = os.environ.get("DISCORD_TOKEN")
-bot.run(token)
+
+if token:
+    bot.run(token)
+else:
+    print("❌ ERROR CRÍTICO: La variable 'DISCORD_TOKEN' no está configurada o está vacía.")
