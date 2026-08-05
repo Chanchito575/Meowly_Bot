@@ -1,7 +1,27 @@
 import os
+import threading
+from flask import Flask
 import discord
 from discord.ext import commands
 
+# --- SERVIDOR WEB DUMMY PARA RENDER ---
+app = Flask('')
+
+@app.route('/')
+def home():
+    return "Bot de Discord activo 24/7!"
+
+def run_flask():
+    # Render asigna automáticamente un puerto mediante la variable PORT
+    port = int(os.environ.get("PORT", 8080))
+    app.run(host='0.0.0.0', port=port)
+
+def keep_alive():
+    t = threading.Thread(target=run_flask)
+    t.daemon = True
+    t.start()
+
+# --- CONFIGURACIÓN DEL BOT ---
 intents = discord.Intents.default()
 intents.message_content = True
 bot = commands.Bot(command_prefix='.', intents=intents)
@@ -36,5 +56,7 @@ async def crear_categorias(ctx, *, nombres: str):
 
     await ctx.send(f"✅ ¡Se crearon **{creadas}** categorías!")
 
+# Arranca el servidor web en segundo plano y luego el bot
+keep_alive()
 token = os.environ.get("DISCORD_TOKEN")
 bot.run(token)
