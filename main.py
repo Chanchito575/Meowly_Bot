@@ -82,7 +82,7 @@ async def inteligencia_artificial(ctx, *, pregunta: str = None):
 
             # Enviamos el historial a Gemini 2.5 Flash
             response = ai_client.models.generate_content(
-                model='gemini-2.5-flash',
+                model='gemini-2.0-flash',
                 contents=list(historial)
             )
 
