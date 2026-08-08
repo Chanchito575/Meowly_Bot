@@ -105,4 +105,110 @@ async def inteligencia_artificial(ctx, *, pregunta: str = None):
             await ctx.send(respuesta_texto)
 
         except Exception as e:
-            await ctx.send(f"⚠️ Ocurrió un error con Groq:\n```text\n{e}\n
+            await ctx.send(f"⚠️ Ocurrió un error con Groq:\n```text\n{e}\n```")
+
+# ==========================================
+# COMANDO: .limpiar
+# ==========================================
+@bot.command(name="limpiar")
+async def borrar_historial(ctx):
+    user_id = ctx.author.id
+    if user_id in historiales_usuarios:
+        del historiales_usuarios[user_id]
+        await ctx.send(f"🧹 {ctx.author.mention}, he olvidado nuestra conversación anterior.")
+    else:
+        await ctx.send(f"🤖 {ctx.author.mention}, no teníamos ningún historial.")
+
+# ==========================================
+# COMANDOS: Canales y Categorías
+# ==========================================
+@bot.command(name="canales")
+@commands.has_permissions(manage_channels=True)
+async def crear_canales(ctx, *, nombres: str = None):
+    if nombres is None:
+        await ctx.send("Especifica los nombres separados por comas.")
+        return
+
+    lista_nombres = [n.strip() for n in nombres.split(",") if n.strip()]
+    creados = []
+    
+    for nombre in lista_nombres:
+        nuevo_canal = await ctx.guild.create_text_channel(name=nombre)
+        creados.append(nuevo_canal.mention)
+
+    await ctx.send(f"✅ Canales creados: {', '.join(creados)}")
+
+@bot.command(name="categorias")
+@commands.has_permissions(manage_channels=True)
+async def crear_categorias(ctx, *, nombres: str = None):
+    if nombres is None:
+        await ctx.send("Especifica los nombres separados por comas.")
+        return
+
+    lista_nombres = [n.strip() for n in nombres.split(",") if n.strip()]
+    creados = []
+    
+    for nombre in lista_nombres:
+        nueva_cat = await ctx.guild.create_category(name=nombre)
+        creados.append(f"**{nueva_cat.name}**")
+
+    await ctx.send(f"✅ Categorías creadas: {', '.join(creados)}")
+
+# ==========================================
+# CLASE Y COMANDO: .eliminar (Con Botones)
+# ==========================================
+class ConfirmarEliminar(discord.ui.View):
+    def __init__(self, autor_id):
+        super().__init__(timeout=30)
+        self.autor_id = autor_id
+        self.valor = None
+
+    @discord.ui.button(label="Sí, borrar", style=discord.ButtonStyle.danger)
+    async def confirmar(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if interaction.user.id != self.autor_id:
+            await interaction.response.send_message("No puedes usar este botón.", ephemeral=True)
+            return
+        
+        self.valor = True
+        self.stop()
+        await interaction.response.edit_message(content="🗑️ Eliminando canal...", view=None)
+        await interaction.channel.delete(reason=f"Eliminado por {interaction.user}")
+
+    @discord.ui.button(label="Cancelar", style=discord.ButtonStyle.secondary)
+    async def cancelar(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if interaction.user.id != self.autor_id:
+            await interaction.response.send_message("No puedes usar este botón.", ephemeral=True)
+            return
+        
+        self.valor = False
+        self.stop()
+        await interaction.response.edit_message(content="❌ Acción cancelada.", view=None)
+
+@bot.command(name="eliminar")
+@commands.has_permissions(manage_channels=True)
+async def eliminar_canal(ctx):
+    view = ConfirmarEliminar(ctx.author.id)
+    mensaje = await ctx.send(f"⚠️ {ctx.author.mention}, ¿seguro que quieres borrar este canal?", view=view)
+    
+    await view.wait()
+    
+    if view.valor is None:
+        try:
+            await mensaje.edit(content="⏱️ Tiempo agotado. El canal no fue eliminado.", view=None)
+        except:
+            pass
+
+# ==========================================
+# MANEJO DE ERRORES DE PERMISOS
+# ==========================================
+@crear_canales.error
+@crear_categorias.error
+@eliminar_canal.error
+async def manejar_errores_permisos(ctx, error):
+    if isinstance(error, commands.MissingPermissions):
+        await ctx.send("⚠️ No tienes permisos para gestionar canales.")
+
+# ==========================================
+# INICIO DEL BOT
+# ==========================================
+bot.run(os.environ.get("DISCORD_TOKEN"))
