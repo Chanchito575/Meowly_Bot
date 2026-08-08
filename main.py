@@ -169,6 +169,61 @@ async def crear_categorias(ctx, *, nombres: str = None):
 async def manejar_errores_permisos(ctx, error):
     if isinstance(error, commands.MissingPermissions):
         await ctx.send("⚠️ No tienes permisos para gestionar canales.")
+        
+# ==========================================
+# CLASE DE BOTONES PARA ELIMINAR CANAL
+# ==========================================
+class ConfirmarEliminar(discord.ui.View):
+    def __init__(self, autor_id):
+        super().__init__(timeout=30)  # Los botones caducan en 30 segundos
+        self.autor_id = autor_id
+        self.valor = None
+
+    @discord.ui.button(label="Sí, borrar", style=discord.ButtonStyle.danger)
+    async def confirmar(self, interaction: discord.Interaction, button: discord.ui.Button):
+        # Verificamos que solo la persona que usó el comando pueda presionar el botón
+        if interaction.user.id != self.autor_id:
+            await interaction.response.send_message("No puedes usar este botón.", ephemeral=True)
+            return
+        
+        self.valor = True
+        self.stop()
+        await interaction.response.edit_message(content="🗑️ Eliminando canal...", view=None)
+        await interaction.channel.delete(reason=f"Eliminado por {interaction.user}")
+
+    @discord.ui.button(label="Cancelar", style=discord.ButtonStyle.secondary)
+    async def cancelar(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if interaction.user.id != self.autor_id:
+            await interaction.response.send_message("No puedes usar este botón.", ephemeral=True)
+            return
+        
+        self.valor = False
+        self.stop()
+        await interaction.response.edit_message(content="❌ Acción cancelada.", view=None)
+
+# ==========================================
+# COMANDO: .eliminar con Botones Interactivos
+# ==========================================
+@bot.command(name="eliminar")
+@commands.has_permissions(manage_channels=True)
+async def eliminar_canal(ctx):
+    view = ConfirmarEliminar(ctx.author.id)
+    mensaje = await ctx.send(f"⚠️ {ctx.author.mention}, ¿seguro que quieres borrar este canal?", view=view)
+    
+    # Esperamos a que el usuario presione algún botón o pase el tiempo (30s)
+    await view.wait()
+    
+    if view.valor is None:
+        # Si pasó el tiempo y nadie presionó nada
+        try:
+            await mensaje.edit(content="⏱️ Tiempo agotado. El canal no fue eliminado.", view=None)
+        except:
+            pass
+
+@eliminar_canal.error
+async def eliminar_canal_error(ctx, error):
+    if isinstance(error, commands.MissingPermissions):
+        await ctx.send("⚠️ No tienes permisos para gestionar canales.")
 
 # ==========================================
 # INICIO DEL BOT
