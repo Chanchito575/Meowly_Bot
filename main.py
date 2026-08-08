@@ -59,7 +59,7 @@ async def mostrar_ayuda(ctx):
     await ctx.send(embed=embed)
 
 # ==========================================
-# COMANDO DE IA (Carek con 20 de memoria)
+# COMANDO DE IA (Carek con memoria)
 # ==========================================
 @bot.command(name="IA", aliases=["ia"])
 async def inteligencia_artificial(ctx, *, pregunta: str = None):
@@ -82,7 +82,7 @@ async def inteligencia_artificial(ctx, *, pregunta: str = None):
 
             # Enviamos el historial a Gemini 2.0 Flash
             response = ai_client.models.generate_content(
-                model='gemini-1.5-flash-latest',
+                model='gemini-2.0-flash',
                 contents=list(historial)
             )
 
