@@ -28,7 +28,7 @@ historiales_usuarios = {}
 
 @bot.event
 async def on_ready():
-    print(f'✅ Carek está conectado y listo como: {bot.user}')
+    print(f"✅ Carek está conectado y listo como: {bot.user}")
     await bot.change_presence(activity=discord.Game(name="Usa .help para mis comandos"))
 
 # ==========================================
