@@ -1,6 +1,7 @@
 import os
 import discord
 import datetime
+from keep_alive import keep_alive
 from discord.ext import commands
 from collections import deque
 from openai import OpenAI
@@ -156,4 +157,5 @@ class ConfirmarEliminar(discord.ui.View):
 async def eliminar_canal(ctx):
     await ctx.send("⚠️ ¿Borrar este canal?", view=ConfirmarEliminar(ctx.author.id))
 
+keep_alive()
 bot.run(os.environ.get("DISCORD_TOKEN"))
