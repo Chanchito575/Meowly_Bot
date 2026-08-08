@@ -2,16 +2,16 @@ import os
 import discord
 from discord.ext import commands
 from collections import deque
-import google.generativeai as genai
+from openai import OpenAI
 
 # ==========================================
-# CONFIGURACIÓN DE GEMINI
+# CONFIGURACIÓN DE GROQ
 # ==========================================
-genai.configure(api_key=os.environ.get("GEMINI_API_KEY"))
-
-# Definimos el modelo por defecto. Si esto falla, usaremos el comando .modelos 
-# para ver cuál debemos poner aquí realmente.
-model = genai.GenerativeModel('models/gemini-3.5-flash')
+client = OpenAI(
+    api_key=os.environ.get("GROQ_API_KEY"),
+    base_url="https://api.groq.com/openai/v1"
+)
+MODELO_GROQ = "llama-3.3-70b-versatile"
 
 # ==========================================
 # CONFIGURACIÓN DE DISCORD
@@ -46,17 +46,17 @@ async def mostrar_ayuda(ctx):
         name="🧠 Inteligencia Artificial",
         value=(
             "` .ia <pregunta> ` — Chatea conmigo (recuerdo el contexto).\n"
-            "` .limpiar ` — Reinicia nuestro historial.\n"
-            "` .modelos ` — Muestra qué versiones de IA admite tu API Key."
+            "` .limpiar ` — Reinicia nuestro historial."
         ),
         inline=False
     )
     
     embed.add_field(
-        name="🛠️ Organización",
+        name="🛠️ Organización y Moderación",
         value=(
             "` .canales <N1, N2> ` — Crea canales de texto.\n"
-            "` .categorias <N1, N2> ` — Crea categorías."
+            "` .categorias <N1, N2> ` — Crea categorías.\n"
+            "` .eliminar ` — Borra el canal actual con botones."
         ),
         inline=False
     )
@@ -64,29 +64,7 @@ async def mostrar_ayuda(ctx):
     await ctx.send(embed=embed)
 
 # ==========================================
-# COMANDO: .modelos (Para diagnosticar tu API KEY)
-# ==========================================
-@bot.command(name="modelos")
-async def ver_modelos(ctx):
-    await ctx.send("🔍 Consultando con Google los modelos habilitados para tu API Key, un momento...")
-    try:
-        modelos_disponibles = []
-        for m in genai.list_models():
-            # Filtramos solo los modelos que sirven para generar texto
-            if 'generateContent' in m.supported_generation_methods:
-                modelos_disponibles.append(m.name)
-        
-        if modelos_disponibles:
-            texto = "\n".join(modelos_disponibles)
-            await ctx.send(f"✅ **Estos son los nombres EXACTOS que tu API Key tiene permitidos:**\n```text\n{texto}\n```")
-        else:
-            await ctx.send("⚠️ Tu API Key es válida, pero Google no le ha habilitado ningún modelo de texto (podría ser un bloqueo regional o de cuenta nueva).")
-            
-    except Exception as e:
-        await ctx.send(f"⚠️ Error crítico al consultar Google: {e}")
-
-# ==========================================
-# COMANDO: .ia
+# COMANDO: .ia (Usando Groq)
 # ==========================================
 @bot.command(name="IA", aliases=["ia"])
 async def inteligencia_artificial(ctx, *, pregunta: str = None):
@@ -102,11 +80,23 @@ async def inteligencia_artificial(ctx, *, pregunta: str = None):
                 historiales_usuarios[user_id] = deque(maxlen=LIMITE_MENSAJES)
 
             historial = historiales_usuarios[user_id]
+            
+            mensajes_formato = [{"role": "system", "content": "Eres Carek, un asistente útil, amigable y divertido en Discord."}]
+            
+            for msg in historial:
+                rol = "user" if msg["role"] == "user" else "assistant"
+                texto_parte = msg["parts"][0] if isinstance(msg["parts"], list) else msg["parts"]
+                mensajes_formato.append({"role": rol, "content": texto_parte})
+
+            mensajes_formato.append({"role": "user", "content": pregunta})
             historial.append({"role": "user", "parts": [pregunta]})
 
-            response = model.generate_content(list(historial))
-            respuesta_texto = response.text
-
+            response = client.chat.completions.create(
+                model=MODELO_GROQ,
+                messages=mensajes_formato
+            )
+            
+            respuesta_texto = response.choices[0].message.content
             historial.append({"role": "model", "parts": [respuesta_texto]})
 
             if len(respuesta_texto) > 2000:
@@ -115,117 +105,4 @@ async def inteligencia_artificial(ctx, *, pregunta: str = None):
             await ctx.send(respuesta_texto)
 
         except Exception as e:
-            await ctx.send(f"⚠️ Ocurrió un error con la IA:\n```text\n{e}\n```\n👉 **Intenta usar `.modelos` para ver si el modelo 'gemini-1.5-flash' está disponible para ti.**")
-
-# ==========================================
-# COMANDO: .limpiar
-# ==========================================
-@bot.command(name="limpiar")
-async def borrar_historial(ctx):
-    user_id = ctx.author.id
-    if user_id in historiales_usuarios:
-        del historiales_usuarios[user_id]
-        await ctx.send(f"🧹 {ctx.author.mention}, he olvidado nuestra conversación anterior.")
-    else:
-        await ctx.send(f"🤖 {ctx.author.mention}, no teníamos ningún historial.")
-
-# ==========================================
-# COMANDOS: Canales y Categorías
-# ==========================================
-@bot.command(name="canales")
-@commands.has_permissions(manage_channels=True)
-async def crear_canales(ctx, *, nombres: str = None):
-    if nombres is None:
-        await ctx.send("Especifica los nombres separados por comas.")
-        return
-
-    lista_nombres = [n.strip() for n in nombres.split(",") if n.strip()]
-    creados = []
-    
-    for nombre in lista_nombres:
-        nuevo_canal = await ctx.guild.create_text_channel(name=nombre)
-        creados.append(nuevo_canal.mention)
-
-    await ctx.send(f"✅ Canales creados: {', '.join(creados)}")
-
-@bot.command(name="categorias")
-@commands.has_permissions(manage_channels=True)
-async def crear_categorias(ctx, *, nombres: str = None):
-    if nombres is None:
-        await ctx.send("Especifica los nombres separados por comas.")
-        return
-
-    lista_nombres = [n.strip() for n in nombres.split(",") if n.strip()]
-    creados = []
-    
-    for nombre in lista_nombres:
-        nueva_cat = await ctx.guild.create_category(name=nombre)
-        creados.append(f"**{nueva_cat.name}**")
-
-    await ctx.send(f"✅ Categorías creadas: {', '.join(creados)}")
-
-@crear_canales.error
-@crear_categorias.error
-async def manejar_errores_permisos(ctx, error):
-    if isinstance(error, commands.MissingPermissions):
-        await ctx.send("⚠️ No tienes permisos para gestionar canales.")
-        
-# ==========================================
-# CLASE DE BOTONES PARA ELIMINAR CANAL
-# ==========================================
-class ConfirmarEliminar(discord.ui.View):
-    def __init__(self, autor_id):
-        super().__init__(timeout=30)  # Los botones caducan en 30 segundos
-        self.autor_id = autor_id
-        self.valor = None
-
-    @discord.ui.button(label="Sí, borrar", style=discord.ButtonStyle.danger)
-    async def confirmar(self, interaction: discord.Interaction, button: discord.ui.Button):
-        # Verificamos que solo la persona que usó el comando pueda presionar el botón
-        if interaction.user.id != self.autor_id:
-            await interaction.response.send_message("No puedes usar este botón.", ephemeral=True)
-            return
-        
-        self.valor = True
-        self.stop()
-        await interaction.response.edit_message(content="🗑️ Eliminando canal...", view=None)
-        await interaction.channel.delete(reason=f"Eliminado por {interaction.user}")
-
-    @discord.ui.button(label="Cancelar", style=discord.ButtonStyle.secondary)
-    async def cancelar(self, interaction: discord.Interaction, button: discord.ui.Button):
-        if interaction.user.id != self.autor_id:
-            await interaction.response.send_message("No puedes usar este botón.", ephemeral=True)
-            return
-        
-        self.valor = False
-        self.stop()
-        await interaction.response.edit_message(content="❌ Acción cancelada.", view=None)
-
-# ==========================================
-# COMANDO: .eliminar con Botones Interactivos
-# ==========================================
-@bot.command(name="eliminar")
-@commands.has_permissions(manage_channels=True)
-async def eliminar_canal(ctx):
-    view = ConfirmarEliminar(ctx.author.id)
-    mensaje = await ctx.send(f"⚠️ {ctx.author.mention}, ¿seguro que quieres borrar este canal?", view=view)
-    
-    # Esperamos a que el usuario presione algún botón o pase el tiempo (30s)
-    await view.wait()
-    
-    if view.valor is None:
-        # Si pasó el tiempo y nadie presionó nada
-        try:
-            await mensaje.edit(content="⏱️ Tiempo agotado. El canal no fue eliminado.", view=None)
-        except:
-            pass
-
-@eliminar_canal.error
-async def eliminar_canal_error(ctx, error):
-    if isinstance(error, commands.MissingPermissions):
-        await ctx.send("⚠️ No tienes permisos para gestionar canales.")
-
-# ==========================================
-# INICIO DEL BOT
-# ==========================================
-bot.run(os.environ.get("DISCORD_TOKEN"))
+            await ctx.send(f"⚠️ Ocurrió un error con Groq:\n```text\n{e}\n
