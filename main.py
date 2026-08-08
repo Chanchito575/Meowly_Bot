@@ -11,7 +11,7 @@ genai.configure(api_key=os.environ.get("GEMINI_API_KEY"))
 
 # Definimos el modelo por defecto. Si esto falla, usaremos el comando .modelos 
 # para ver cuál debemos poner aquí realmente.
-model = genai.GenerativeModel('gemini-1.5-flash')
+model = genai.GenerativeModel('models/gemini-2.5-flash')
 
 # ==========================================
 # CONFIGURACIÓN DE DISCORD
