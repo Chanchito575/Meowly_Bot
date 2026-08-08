@@ -80,7 +80,7 @@ async def inteligencia_artificial(ctx, *, pregunta: str = None):
             # Agregamos la pregunta del usuario
             historial.append({"role": "user", "parts": [{"text": pregunta}]})
 
-            # Enviamos el historial a Gemini 2.5 Flash
+            # Enviamos el historial a Gemini 2.0 Flash
             response = ai_client.models.generate_content(
                 model='gemini-2.0-flash',
                 contents=list(historial)
