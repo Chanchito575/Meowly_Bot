@@ -180,27 +180,52 @@ async def eliminar_actual(interaction: discord.Interaction):
     await interaction.channel.delete()
 
 @grupo_eliminar.command(name="all", description="[Admin] Elimina masivamente canales buscando por nombre")
-@app_commands.describe(nombre="El nombre exacto de los canales a borrar", cantidad="Máximo de canales a borrar")
+@app_commands.describe(
+    cantidad="Máximo de canales a borrar (Ej: 20)",
+    nombre="Nombre exacto (Déjalo vacío para borrar los que se llamen igual a este canal)"
+)
 @app_commands.checks.has_permissions(manage_channels=True)
-async def eliminar_all(interaction: discord.Interaction, nombre: str, cantidad: int = 10):
+async def eliminar_all(interaction: discord.Interaction, cantidad: int = 10, nombre: str = None):
+    # Si el usuario no escribe un nombre, usamos el nombre del canal actual
+    nombre_objetivo = nombre if nombre else interaction.channel.name
+    
+    # Discord fuerza los nombres a minúsculas y reemplaza espacios por guiones
+    nombre_objetivo = nombre_objetivo.lower().strip().replace(" ", "-")
+
     guild = interaction.guild
-    coincidencias = [c for c in guild.channels if c.name == nombre]
+    # Buscamos coincidencias exactas
+    coincidencias = [c for c in guild.channels if c.name.lower() == nombre_objetivo]
+    
     canales_a_borrar = coincidencias[:cantidad]
 
     if not canales_a_borrar:
-        await interaction.response.send_message(f"ℹ️ No encontré ningún canal que se llame **{nombre}**.", ephemeral=True)
+        await interaction.response.send_message(
+            f"ℹ️ No encontré canales con el nombre **{nombre_objetivo}**.\n"
+            "*(Asegúrate de ejecutar el comando en uno de los canales duplicados o escribir el nombre exacto sin espacios extra)*", 
+            ephemeral=True
+        )
         return
 
-    await interaction.response.send_message(f"💣 **Eliminación masiva:** Borrando {len(canales_a_borrar)} canal(es) llamados **#{nombre}**...")
+    await interaction.response.send_message(f"💣 **Eliminación masiva:** Borrando {len(canales_a_borrar)} canal(es) llamados **#{nombre_objetivo}**...")
+    
+    # Pausa antes de empezar a borrar
     await asyncio.sleep(2)
 
     for canal in canales_a_borrar:
         try:
-            await canal.delete()
-            await asyncio.sleep(1) # Pausa para no saturar la API de Discord
+            # Evitamos que borre el canal desde donde se ejecuta el comando si aún quedan otros por borrar
+            if canal.id != interaction.channel.id: 
+                await canal.delete()
+                await asyncio.sleep(1) # Pausa para no saturar la API de Discord y evitar baneos
         except Exception:
             pass
-
+            
+    # Si el canal actual también debe ser borrado y estaba en la lista, lo borramos al final
+    if interaction.channel in canales_a_borrar:
+        try:
+            await interaction.channel.delete()
+        except Exception:
+            pass
 
 # --- /canales ---
 @bot.tree.command(name="canales", description="[Admin] Organizador de canales (Máx. 5). Aclara lo de: Nombre, Nombre, Nombre")
