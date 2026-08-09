@@ -227,6 +227,52 @@ async def eliminar_all(interaction: discord.Interaction, cantidad: int = 10, nom
         except Exception:
             pass
 
+# --- /eliminar_sueltos ---
+@bot.tree.command(name="eliminar_sueltos", description="[Admin] Elimina canales sin categoría o que coincidan con un texto")
+@app_commands.describe(
+    cantidad="Cantidad máxima de canales a borrar (Ej: 50)",
+    filtro="Escribe '67' o el texto que contengan (Deja vacío para borrar todos los sin categoría)"
+)
+@app_commands.checks.has_permissions(manage_channels=True)
+async def eliminar_sueltos(interaction: discord.Interaction, cantidad: int = 50, filtro: str = None):
+    await interaction.response.defer()
+    guild = interaction.guild
+
+    # Filtrar canales de texto que NO pertenecen a ninguna categoría
+    canales_sin_categoria = [c for c in guild.text_channels if c.category is None]
+
+    if filtro:
+        filtro_clean = filtro.strip().lower()
+        canales_a_borrar = [
+            c for c in canales_sin_categoria 
+            if filtro_clean in c.name.lower() or filtro_clean in c.name.replace("-", "").lower()
+        ]
+    else:
+        canales_a_borrar = canales_sin_categoria
+
+    canales_a_borrar = canales_a_borrar[:cantidad]
+
+    if not canales_a_borrar:
+        await interaction.followup.send("ℹ️ No se encontraron canales sueltos sin categoría que coincidan.", ephemeral=True)
+        return
+
+    await interaction.followup.send(f"💣 **Limpieza en proceso:** Eliminando {len(canales_a_borrar)} canal(es) sueltos...")
+
+    for canal in canales_a_borrar:
+        if canal.id != interaction.channel.id:
+            try:
+                await canal.delete()
+                await asyncio.sleep(0.8) # Pausa para no saturar la API de Discord
+            except Exception:
+                pass
+
+    # Si el canal desde donde lanzaste el comando también estaba en la lista, borrarlo al final
+    if interaction.channel in canales_a_borrar:
+        try:
+            await interaction.channel.delete()
+        except Exception:
+            pass
+            
 # --- /canales ---
 @bot.tree.command(name="canales", description="[Admin] Organizador de canales (Máx. 5). Aclara lo de: Nombre, Nombre, Nombre")
 @app_commands.describe(
