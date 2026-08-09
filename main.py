@@ -1,9 +1,31 @@
 import os
 import asyncio
+from threading import Thread
 from datetime import datetime, timedelta, timezone
+from flask import Flask
 import discord
 from discord.ext import commands
 from groq import Groq
+
+# ==========================================
+# 0. SERVIDOR WEB PARA RENDER (Puntero de Puerto)
+# ==========================================
+
+app = Flask('')
+
+@app.route('/')
+def home():
+    return "🤖 Carek Bot está en línea y funcionando."
+
+def run_flask():
+    # Render asigna automáticamente la variable de entorno PORT
+    port = int(os.getenv("PORT", 8080))
+    app.run(host='0.0.0.0', port=port)
+
+def keep_alive():
+    t = Thread(target=run_flask)
+    t.daemon = True
+    t.start()
 
 # ==========================================
 # 1. CONFIGURACIÓN E INICIALIZACIÓN
@@ -72,7 +94,7 @@ async def on_command_error(ctx, error):
     elif isinstance(error, commands.MissingRequiredArgument):
         await ctx.send("⚠️ **Faltan argumentos:** Revisa la sintaxis del comando con `.help`.")
     elif isinstance(error, commands.CommandNotFound):
-        pass  # Ignorar comandos no existentes
+        pass
     else:
         print(f"Error detectado: {error}")
 
@@ -156,7 +178,6 @@ async def canales(ctx, *, args: str):
     nombre_categoria = partes[0].strip()
     nombres_canales = [n.strip() for n in partes[1].split(",") if n.strip()]
 
-    # Límite de seguridad
     LIMITE_MAXIMO = 5
     if len(nombres_canales) > LIMITE_MAXIMO:
         await ctx.send(f"⚠️ **Seguridad:** Solo puedes crear hasta **{LIMITE_MAXIMO} canales** a la vez para evitar spam.")
@@ -199,29 +220,24 @@ async def eliminar(ctx):
 @eliminar.command(name="all")
 @commands.has_permissions(manage_channels=True)
 async def eliminar_all(ctx, cantidad: int = 10):
-    """Subcomando .eliminar all [cantidad]: Elimina todos los canales que tengan el mismo nombre que este."""
+    """Subcomando .eliminar all [cantidad]: Elimina todos los canales con el mismo nombre que este."""
     nombre_objetivo = ctx.channel.name
     guild = ctx.guild
 
-    # Buscar todos los canales que tengan exactamente el mismo nombre
     coincidencias = [c for c in guild.channels if c.name == nombre_objetivo]
-    
-    # Limitar la cantidad máxima a borrar
     canales_a_borrar = coincidencias[:cantidad]
 
     if not canales_a_borrar:
         await ctx.send("ℹ️ No se encontraron otros canales con este mismo nombre.")
         return
 
-    msg = await ctx.send(f"💣 **Eliminación masiva:** Borrando {len(canales_a_borrar)} canal(es) con el nombre **#{nombre_objetivo}**...")
-    await asyncio.sleep(3)
+    await ctx.send(f"💣 **Eliminación masiva:** Borrando {len(canales_a_borrar)} canal(es) con el nombre **#{nombre_objetivo}**...")
+    await asyncio.sleep(2)
 
-    eliminados = 0
     for canal in canales_a_borrar:
         try:
             await canal.delete()
-            eliminados += 1
-            await asyncio.sleep(1)  # Pausa de seguridad para evitar bloqueos por Rate Limit de Discord
+            await asyncio.sleep(1)
         except Exception:
             pass
 
@@ -309,6 +325,9 @@ async def help_command(ctx):
 
 if __name__ == "__main__":
     if DISCORD_TOKEN:
+        # Iniciar servidor Flask para responder a los escaneos de puerto de Render
+        keep_alive()
+        # Iniciar bot de Discord
         bot.run(DISCORD_TOKEN)
     else:
         print("❌ No se encontró DISCORD_TOKEN.")
