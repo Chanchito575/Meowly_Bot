@@ -4,21 +4,20 @@ from threading import Thread
 from datetime import datetime, timedelta, timezone
 from flask import Flask
 import discord
-from discord.ext import commands
+from discord import app_commands
 from groq import Groq
 
 # ==========================================
-# 0. SERVIDOR WEB PARA RENDER (Puntero de Puerto)
+# 0. SERVIDOR WEB PARA RENDER (Anti-Crash)
 # ==========================================
 
 app = Flask('')
 
 @app.route('/')
 def home():
-    return "🤖 Carek Bot está en línea y funcionando."
+    return "🤖 Carek Bot está en línea y el puerto está abierto."
 
 def run_flask():
-    # Render asigna automáticamente la variable de entorno PORT
     port = int(os.getenv("PORT", 8080))
     app.run(host='0.0.0.0', port=port)
 
@@ -36,12 +35,19 @@ GROQ_API_KEY = os.getenv("GROQ_API_KEY")
 
 groq_client = Groq(api_key=GROQ_API_KEY) if GROQ_API_KEY else None
 
-intents = discord.Intents.default()
-intents.message_content = True
+class CarekBot(discord.Client):
+    def __init__(self):
+        intents = discord.Intents.default()
+        intents.message_content = True
+        super().__init__(intents=intents)
+        self.tree = app_commands.CommandTree(self)
 
-bot = commands.Bot(command_prefix=".", intents=intents, help_command=None)
+    async def setup_hook(self):
+        await self.tree.sync()
+        print("✅ Slash commands sincronizados correctamente.")
 
-# Historial de la IA
+bot = CarekBot()
+
 historiales_usuarios = {}
 
 PROMPT_SISTEMA = (
@@ -54,202 +60,200 @@ PROMPT_SISTEMA = (
 # ==========================================
 
 def limpiar_historial_expirado(user_id: int):
-    """Elimina la memoria del usuario si pasaron más de 45 minutos sin hablar."""
     if user_id in historiales_usuarios:
         ultimo_uso = historiales_usuarios[user_id]["last_active"]
         if datetime.now(timezone.utc) - ultimo_uso > timedelta(minutes=45):
             del historiales_usuarios[user_id]
 
-async def enviar_mensaje_largo(ctx, texto: str):
-    """Divide y envía respuestas extensas para no superar los 2000 caracteres de Discord."""
+async def enviar_mensaje_largo(interaction: discord.Interaction, texto: str):
     limite = 1900
     if len(texto) <= limite:
-        await ctx.send(texto)
+        await interaction.followup.send(texto)
         return
 
     lineas = texto.split("\n")
     bloque = ""
     for linea in lineas:
         if len(bloque) + len(linea) + 1 > limite:
-            await ctx.send(bloque)
+            await interaction.followup.send(bloque)
             bloque = linea + "\n"
         else:
             bloque += linea + "\n"
 
     if bloque.strip():
-        await ctx.send(bloque)
+        await interaction.followup.send(bloque)
 
 # ==========================================
-# 3. EVENTOS DEL BOT Y MANEJO DE ERRORES
+# 3. MANEJO DE ERRORES GLOBALES
 # ==========================================
 
-@bot.event
-async def on_ready():
-    print(f"🤖 Bot Carek iniciado correctamente como {bot.user}")
-
-@bot.event
-async def on_command_error(ctx, error):
-    if isinstance(error, commands.MissingPermissions):
-        await ctx.send("🚫 **Sin permisos:** Necesitas permisos de administración o gestión de canales para usar este comando.")
-    elif isinstance(error, commands.MissingRequiredArgument):
-        await ctx.send("⚠️ **Faltan argumentos:** Revisa la sintaxis del comando con `.help`.")
-    elif isinstance(error, commands.CommandNotFound):
-        pass
+@bot.tree.error
+async def on_app_command_error(interaction: discord.Interaction, error: app_commands.AppCommandError):
+    if isinstance(error, app_commands.MissingPermissions):
+        mensaje = "🚫 **Acceso Denegado:** Necesitas el permiso de `Gestionar Canales` para usar este comando."
+        if interaction.response.is_done():
+            await interaction.followup.send(mensaje, ephemeral=True)
+        else:
+            await interaction.response.send_message(mensaje, ephemeral=True)
     else:
         print(f"Error detectado: {error}")
 
 # ==========================================
-# 4. COMANDOS PRINCIPALES CON PREFIJO '.'
+# 4. SLASH COMMANDS
 # ==========================================
 
-# --- .ia ---
-@bot.command(name="ia")
-async def ia(ctx, *, mensaje: str):
+# --- /ia ---
+@bot.tree.command(name="ia", description="Habla con la IA de Carek")
+@app_commands.describe(mensaje="El mensaje que quieres enviarle a la IA")
+async def ia(interaction: discord.Interaction, mensaje: str):
     if not groq_client:
-        await ctx.send("⚠️ La API de Groq no está configurada.")
+        await interaction.response.send_message("⚠️ La API de Groq no está configurada.", ephemeral=True)
         return
 
-    async with ctx.typing():
-        user_id = ctx.author.id
-        limpiar_historial_expirado(user_id)
+    await interaction.response.defer()
+    user_id = interaction.user.id
+    limpiar_historial_expirado(user_id)
 
-        if user_id not in historiales_usuarios:
-            historiales_usuarios[user_id] = {
-                "messages": [{"role": "system", "content": PROMPT_SISTEMA}],
-                "last_active": datetime.now(timezone.utc)
-            }
+    if user_id not in historiales_usuarios:
+        historiales_usuarios[user_id] = {
+            "messages": [{"role": "system", "content": PROMPT_SISTEMA}],
+            "last_active": datetime.now(timezone.utc)
+        }
 
-        user_data = historiales_usuarios[user_id]
-        user_data["messages"].append({"role": "user", "content": mensaje})
+    user_data = historiales_usuarios[user_id]
+    user_data["messages"].append({"role": "user", "content": mensaje})
 
-        if len(user_data["messages"]) > 21:
-            user_data["messages"] = [user_data["messages"][0]] + user_data["messages"][-20:]
+    # Límite de memoria establecido a 20
+    if len(user_data["messages"]) > 20:
+        user_data["messages"] = [user_data["messages"][0]] + user_data["messages"][-19:]
 
-        user_data["last_active"] = datetime.now(timezone.utc)
+    user_data["last_active"] = datetime.now(timezone.utc)
 
-        try:
-            loop = asyncio.get_event_loop()
-            completion = await loop.run_in_executor(
-                None,
-                lambda: groq_client.chat.completions.create(
-                    model="llama-3.3-70b-versatile",
-                    messages=user_data["messages"],
-                    temperature=0.7,
-                    max_tokens=1000
-                )
+    try:
+        loop = asyncio.get_event_loop()
+        completion = await loop.run_in_executor(
+            None,
+            lambda: groq_client.chat.completions.create(
+                model="llama-3.3-70b-versatile",
+                messages=user_data["messages"],
+                temperature=0.7,
+                max_tokens=1000
             )
-            respuesta = completion.choices[0].message.content
-            user_data["messages"].append({"role": "assistant", "content": respuesta})
-            await enviar_mensaje_largo(ctx, respuesta)
+        )
+        respuesta = completion.choices[0].message.content
+        user_data["messages"].append({"role": "assistant", "content": respuesta})
+        await enviar_mensaje_largo(interaction, respuesta)
+    except Exception as e:
+        await interaction.followup.send(f"❌ Ocurrió un error al conectar con la IA: {e}")
 
-        except Exception as e:
-            await ctx.send(f"❌ Ocurrió un error al conectar con la IA: {e}")
 
-# --- .limpiar Y SUBCOMANDO .limpiar all ---
-@bot.group(name="limpiar", invoke_without_command=True)
-async def limpiar(ctx):
-    """Borra el historial del usuario actual."""
-    user_id = ctx.author.id
+# --- GRUPO: /limpiar ---
+grupo_limpiar = app_commands.Group(name="limpiar", description="Opciones para limpiar el historial de la IA")
+bot.tree.add_command(grupo_limpiar)
+
+@grupo_limpiar.command(name="historial", description="Borra tu historial personal con la IA")
+async def limpiar_historial(interaction: discord.Interaction):
+    user_id = interaction.user.id
     if user_id in historiales_usuarios:
         del historiales_usuarios[user_id]
-        await ctx.send("🧹 Borré tu historial con la IA. Puedes empezar una nueva conversación.")
+        await interaction.response.send_message("🧹 Borré tu historial con la IA. Puedes empezar una nueva conversación.")
     else:
-        await ctx.send("ℹ️ No tenías ningún historial activo guardado.")
+        await interaction.response.send_message("ℹ️ No tenías ningún historial activo guardado.", ephemeral=True)
 
-@limpiar.command(name="all")
-@commands.has_permissions(manage_channels=True)
-async def limpiar_all(ctx):
-    """Subcomando .limpiar all: Borra la memoria global de todos los usuarios."""
+@grupo_limpiar.command(name="all", description="[Admin] Borra la memoria global de todos los usuarios")
+@app_commands.checks.has_permissions(manage_channels=True)
+async def limpiar_all(interaction: discord.Interaction):
     global historiales_usuarios
     historiales_usuarios.clear()
-    await ctx.send("🧹 **Memoria global reiniciada:** Se han borrado los historiales de todos los usuarios.")
+    await interaction.response.send_message("🧹 **Memoria global reiniciada:** Se han borrado los historiales de todos.")
 
-# --- .canales (CON RESTRICCIONES Y LÍMITE) ---
-@bot.command(name="canales")
-@commands.has_permissions(manage_channels=True)
-async def canales(ctx, *, args: str):
-    """Uso: .canales Categoria | Nombre1, Nombre2, Nombre3"""
-    partes = args.split("|")
-    
-    if len(partes) < 2:
-        await ctx.send("⚠️ **Formato incorrecto.** Usa: `.canales NombreCategoría | Nombre1, Nombre2, Nombre3`")
-        return
 
-    nombre_categoria = partes[0].strip()
-    nombres_canales = [n.strip() for n in partes[1].split(",") if n.strip()]
+# --- GRUPO: /eliminar ---
+grupo_eliminar = app_commands.Group(name="eliminar", description="Opciones de eliminación de canales")
+bot.tree.add_command(grupo_eliminar)
 
-    LIMITE_MAXIMO = 5
-    if len(nombres_canales) > LIMITE_MAXIMO:
-        await ctx.send(f"⚠️ **Seguridad:** Solo puedes crear hasta **{LIMITE_MAXIMO} canales** a la vez para evitar spam.")
-        return
-
-    guild = ctx.guild
-    categoria = discord.utils.get(guild.categories, name=nombre_categoria)
-    if not categoria:
-        categoria = await guild.create_category(nombre_categoria)
-
-    creados = []
-    for nombre in nombres_canales:
-        canal = await guild.create_text_channel(name=nombre, category=categoria)
-        creados.append(canal.mention)
-
-    await ctx.send(f"✅ Se crearon {len(creados)} canal(es) en **{categoria.name}**:\n" + ", ".join(creados))
-
-# --- .categorias ---
-@bot.command(name="categorias")
-@commands.has_permissions(manage_channels=True)
-async def categorias(ctx):
-    if not ctx.guild.categories:
-        await ctx.send("ℹ️ Este servidor no tiene categorías.")
-        return
-
-    texto = "📁 **Categorías del servidor:**\n\n" + "\n".join(
-        f"• **{cat.name}** ({len(cat.channels)} canales)" for cat in ctx.guild.categories
-    )
-    await ctx.send(texto)
-
-# --- .eliminar Y SUBCOMANDO .eliminar all [cantidad] ---
-@bot.group(name="eliminar", invoke_without_command=True)
-@commands.has_permissions(manage_channels=True)
-async def eliminar(ctx):
-    """Borra el canal de texto actual."""
-    await ctx.send(f"⚠️ El canal **#{ctx.channel.name}** se eliminará en 5 segundos...")
+@grupo_eliminar.command(name="actual", description="[Admin] Elimina el canal donde ejecutas el comando")
+@app_commands.checks.has_permissions(manage_channels=True)
+async def eliminar_actual(interaction: discord.Interaction):
+    await interaction.response.send_message(f"⚠️ El canal **#{interaction.channel.name}** se eliminará en 5 segundos...")
     await asyncio.sleep(5)
-    await ctx.channel.delete()
+    await interaction.channel.delete()
 
-@eliminar.command(name="all")
-@commands.has_permissions(manage_channels=True)
-async def eliminar_all(ctx, cantidad: int = 10):
-    """Subcomando .eliminar all [cantidad]: Elimina todos los canales con el mismo nombre que este."""
-    nombre_objetivo = ctx.channel.name
-    guild = ctx.guild
-
-    coincidencias = [c for c in guild.channels if c.name == nombre_objetivo]
+@grupo_eliminar.command(name="all", description="[Admin] Elimina masivamente canales buscando por nombre")
+@app_commands.describe(nombre="El nombre exacto de los canales a borrar", cantidad="Máximo de canales a borrar")
+@app_commands.checks.has_permissions(manage_channels=True)
+async def eliminar_all(interaction: discord.Interaction, nombre: str, cantidad: int = 10):
+    guild = interaction.guild
+    coincidencias = [c for c in guild.channels if c.name == nombre]
     canales_a_borrar = coincidencias[:cantidad]
 
     if not canales_a_borrar:
-        await ctx.send("ℹ️ No se encontraron otros canales con este mismo nombre.")
+        await interaction.response.send_message(f"ℹ️ No encontré ningún canal que se llame **{nombre}**.", ephemeral=True)
         return
 
-    await ctx.send(f"💣 **Eliminación masiva:** Borrando {len(canales_a_borrar)} canal(es) con el nombre **#{nombre_objetivo}**...")
+    await interaction.response.send_message(f"💣 **Eliminación masiva:** Borrando {len(canales_a_borrar)} canal(es) llamados **#{nombre}**...")
     await asyncio.sleep(2)
 
     for canal in canales_a_borrar:
         try:
             await canal.delete()
-            await asyncio.sleep(1)
+            await asyncio.sleep(1) # Pausa para no saturar la API de Discord
         except Exception:
             pass
 
-# --- .resumen ---
-@bot.command(name="resumen")
-async def resumen(ctx, fecha_inicio: str, fecha_fin: str):
-    if not groq_client:
-        await ctx.send("⚠️ La API de Groq no está configurada.")
+
+# --- /canales ---
+@bot.tree.command(name="canales", description="[Admin] Organizador de canales (Máx. 5). Aclara lo de: Nombre, Nombre, Nombre")
+@app_commands.describe(
+    categoria="Categoría donde se crearán",
+    nombres="Nombres de los canales (Ej: general, dudas, fotos)"
+)
+@app_commands.checks.has_permissions(manage_channels=True)
+async def canales_cmd(interaction: discord.Interaction, categoria: str, nombres: str):
+    await interaction.response.defer()
+    guild = interaction.guild
+    lista_nombres = [n.strip() for n in nombres.split(",") if n.strip()]
+
+    LIMITE_MAXIMO = 5
+    if len(lista_nombres) > LIMITE_MAXIMO:
+        await interaction.followup.send(f"⚠️ **Seguridad:** Solo puedes crear un máximo de **{LIMITE_MAXIMO} canales** a la vez.")
         return
 
-    año_actual = datetime.now().year
+    cat_obj = discord.utils.get(guild.categories, name=categoria)
+    if not cat_obj:
+        cat_obj = await guild.create_category(categoria)
 
+    creados = []
+    for nombre in lista_nombres:
+        canal = await guild.create_text_channel(name=nombre, category=cat_obj)
+        creados.append(canal.mention)
+
+    await interaction.followup.send(f"✅ Se crearon {len(creados)} canal(es) en **{cat_obj.name}**:\n" + ", ".join(creados))
+
+
+# --- /categorias ---
+@bot.tree.command(name="categorias", description="[Admin] Organizador: Lista las categorías del servidor")
+@app_commands.checks.has_permissions(manage_channels=True)
+async def categorias_cmd(interaction: discord.Interaction):
+    if not interaction.guild.categories:
+        await interaction.response.send_message("ℹ️ Este servidor no tiene categorías.", ephemeral=True)
+        return
+    texto = "📁 **Categorías del servidor:**\n\n" + "\n".join(
+        f"• **{cat.name}** ({len(cat.channels)} canales)" for cat in interaction.guild.categories
+    )
+    await interaction.response.send_message(texto)
+
+
+# --- /resumen ---
+@bot.tree.command(name="resumen", description="Genera un resumen del chat entre dos fechas")
+@app_commands.describe(fecha_inicio="Formato DD/MM", fecha_fin="Formato DD/MM")
+async def resumen(interaction: discord.Interaction, fecha_inicio: str, fecha_fin: str):
+    if not groq_client:
+        await interaction.response.send_message("⚠️ La API de Groq no está configurada.", ephemeral=True)
+        return
+
+    await interaction.response.defer()
+    año_actual = datetime.now().year
     def parse_fecha(f_str):
         partes = f_str.split("/")
         if len(partes) == 2:
@@ -260,74 +264,76 @@ async def resumen(ctx, fecha_inicio: str, fecha_fin: str):
         dt_inicio = parse_fecha(fecha_inicio).replace(tzinfo=timezone.utc)
         dt_fin = parse_fecha(fecha_fin).replace(hour=23, minute=59, second=59, tzinfo=timezone.utc)
     except ValueError:
-        await ctx.send("❌ Formato de fecha inválido. Usa `DD/MM` (Ej: `09/05`).")
+        await interaction.followup.send("❌ Formato de fecha inválido. Usa `DD/MM` (Ej: `09/05`).")
         return
 
     if dt_inicio > dt_fin:
-        await ctx.send("❌ La fecha inicial no puede ser posterior a la fecha final.")
+        await interaction.followup.send("❌ La fecha inicial no puede ser posterior a la fecha final.")
         return
 
     if (dt_fin - dt_inicio).days > 10:
         dt_fin = (dt_inicio + timedelta(days=10)).replace(hour=23, minute=59, second=59)
 
     mensajes_por_dia = {}
-    async for msg in ctx.channel.history(limit=1000, after=dt_inicio, before=dt_fin, oldest_first=True):
+    async for msg in interaction.channel.history(limit=1000, after=dt_inicio, before=dt_fin, oldest_first=True):
         if not msg.author.bot and msg.content.strip():
             fecha_clave = msg.created_at.strftime("%d/%m/%Y")
             mensajes_por_dia.setdefault(fecha_clave, []).append(f"{msg.author.display_name}: {msg.content}")
 
     if not mensajes_por_dia:
-        await ctx.send("ℹ️ No hay mensajes en ese rango de fechas.")
+        await interaction.followup.send("ℹ️ No hay mensajes en ese rango de fechas.")
         return
 
     texto_consulta = "Resume el contenido del chat separando por cada día:\n\n"
     for f_clave, msgs in mensajes_por_dia.items():
         texto_consulta += f"=== DÍA {f_clave} ===\n" + "\n".join(msgs[:50]) + "\n\n"
 
-    async with ctx.typing():
-        try:
-            loop = asyncio.get_event_loop()
-            completion = await loop.run_in_executor(
-                None,
-                lambda: groq_client.chat.completions.create(
-                    model="llama-3.3-70b-versatile",
-                    messages=[
-                        {"role": "system", "content": "Eres un asistente que redacta resúmenes claros e informativos día por día."},
-                        {"role": "user", "content": texto_consulta}
-                    ],
-                    temperature=0.5
-                )
+    try:
+        loop = asyncio.get_event_loop()
+        completion = await loop.run_in_executor(
+            None,
+            lambda: groq_client.chat.completions.create(
+                model="llama-3.3-70b-versatile",
+                messages=[
+                    {"role": "system", "content": "Eres un asistente que redacta resúmenes claros e informativos día por día."},
+                    {"role": "user", "content": texto_consulta}
+                ],
+                temperature=0.5
             )
-            resumen_respuesta = completion.choices[0].message.content
-            await enviar_mensaje_largo(ctx, f"📊 **Resumen del chat:**\n\n" + resumen_respuesta)
-        except Exception as e:
-            await ctx.send(f"❌ Error al procesar el resumen: {e}")
+        )
+        resumen_respuesta = completion.choices[0].message.content
+        await enviar_mensaje_largo(interaction, f"📊 **Resumen del chat:**\n\n{resumen_respuesta}")
+    except Exception as e:
+        await interaction.followup.send(f"❌ Error al procesar el resumen: {e}")
 
-# --- .help ---
-@bot.command(name="help")
-async def help_command(ctx):
+
+# --- /help ---
+@bot.tree.command(name="help", description="Muestra la guía completa de comandos de Carek")
+async def help_cmd(interaction: discord.Interaction):
     guia = (
-        "🤖 **COMANDOS DE CAREK**\n\n"
-        "💬 `.ia [mensaje]` ➔ Habla con la IA (recuerda 20 mensajes por 45 min).\n"
-        "🧹 `.limpiar` ➔ Borra tu historial con la IA.\n"
-        "🧹 `.limpiar all` ➔ *(Admin)* Reinicia la memoria de todos los usuarios.\n"
-        "📊 `.resumen [DD/MM] [DD/MM]` ➔ Resume el chat por fechas.\n"
-        "📋 `.canales Categoría | canal1, canal2` ➔ *(Admin)* Crea hasta 5 canales.\n"
-        "📁 `.categorias` ➔ *(Admin)* Lista las categorías del servidor.\n"
-        "🗑️ `.eliminar` ➔ *(Admin)* Elimina el canal actual tras 5 seg.\n"
-        "🗑️ `.eliminar all [cantidad]` ➔ *(Admin)* Elimina todos los canales duplicados que compartan el mismo nombre."
+        "🤖 **GUÍA DE COMANDOS CAREK**\n\n"
+        "💬 `/ia [mensaje]` ➔ Habla con la IA (recuerda hasta 20 mensajes por 45 min).\n"
+        "🧹 `/limpiar historial` ➔ Borra tu memoria con la IA.\n"
+        "🧹 `/limpiar all` ➔ *(Admin)* Reinicia la memoria de todos los usuarios.\n"
+        "📊 `/resumen [fecha_inicio] [fecha_fin]` ➔ Resume el chat por fechas.\n"
+        "📋 `/canales [categoria] [nombres]` ➔ *(Admin)* Organizador: Crea canales (Aclara lo de .canales Nombre, Nombre, Nombre).\n"
+        "📁 `/categorias` ➔ *(Admin)* Organizador: Lista las categorías del servidor.\n"
+        "🗑️ `/eliminar actual` ➔ *(Admin)* Elimina el canal actual tras 5 seg.\n"
+        "🗑️ `/eliminar all [nombre] [cantidad]` ➔ *(Admin)* Elimina canales duplicados buscando por nombre (Ej: `/eliminar all general 15`)."
     )
-    await ctx.send(guia)
+    await interaction.response.send_message(guia)
 
 # ==========================================
 # 5. EJECUCIÓN
 # ==========================================
 
+@bot.event
+async def on_ready():
+    print(f"🤖 Bot iniciado como {bot.user}")
+
 if __name__ == "__main__":
     if DISCORD_TOKEN:
-        # Iniciar servidor Flask para responder a los escaneos de puerto de Render
-        keep_alive()
-        # Iniciar bot de Discord
+        keep_alive() # Previene error de puertos de Render
         bot.run(DISCORD_TOKEN)
     else:
         print("❌ No se encontró DISCORD_TOKEN.")
