@@ -250,5 +250,5 @@ async def categorias(ctx):
 
 # --- INICIO DEL BOT ---
 if __name__ == "__main__":
-    TOKEN = "TU_TOKEN_AQUI"
+    TOKEN = "DISCORD_TOKEN"
     bot.run(TOKEN)
