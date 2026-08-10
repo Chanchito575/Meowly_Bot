@@ -1,31 +1,32 @@
+import os
+import asyncio
+import collections
+from typing import Optional
+from datetime import datetime, timezone, timedelta
+
 import discord
 from discord import app_commands
 from discord.ext import commands
-from typing import Optional
-from datetime import datetime, timezone, timedelta
-import asyncio
-import collections
+import aiohttp
 
 # --- CONFIGURACIÓN E INICIALIZACIÓN DEL BOT ---
 intents = discord.Intents.default()
 intents.message_content = True
 intents.guilds = True
 
-# Prefix configurado para comandos tradicionales (como .canales)
+# Bot con prefijo para comandos tradicionales (.canales, .categorias)
 bot = commands.Bot(command_prefix=".", intents=intents, help_command=None)
 
-# Sistema de memoria para la IA (límite de 20 mensajes por usuario)
-# Los historiales durarán en memoria el tiempo que el bot esté activo (o se puede añadir lógica de expiración de 45 min)
+# Sistema de memoria para la IA (Límite de 20 mensajes por usuario)
 memoria_ia = collections.defaultdict(lambda: collections.deque(maxlen=20))
 
 @bot.event
 async def on_ready():
-    # Sincronizamos los comandos de barra (slash commands)
+    # Sincroniza los comandos slash con Discord
     await bot.tree.sync()
-    # Establecemos el estado y descripción del bot
     actividad = discord.Game(name="creado o algo asi por Chanchito575")
     await bot.change_presence(status=discord.Status.online, activity=actividad)
-    print(f"✅ Bot conectado como {bot.user}")
+    print(f"✅ Bot conectado con éxito como {bot.user}")
 
 # =====================================================================
 # 💬 1. INTELIGENCIA ARTIFICIAL (/ia)
@@ -36,14 +37,45 @@ async def ia(interaction: discord.Interaction, mensaje: str):
     await interaction.response.defer()
     
     usuario_id = interaction.user.id
-    # Guardamos el mensaje en la memoria (límite 20)
     memoria_ia[usuario_id].append({"role": "user", "content": mensaje})
     
-    # Aquí iría la llamada a tu API de IA (Ej: Groq, OpenAI)
-    respuesta_simulada = f"Procesando tu mensaje usando mis últimos {len(memoria_ia[usuario_id])} recuerdos de nuestra charla."
-    
-    memoria_ia[usuario_id].append({"role": "assistant", "content": respuesta_simulada})
-    await interaction.followup.send(f"🤖 **Respuesta:** {respuesta_simulada}")
+    groq_api_key = os.getenv("GROQ_API_KEY")
+    if not groq_api_key:
+        await interaction.followup.send("❌ Error: La variable `GROQ_API_KEY` no está configurada en las Variables de Entorno.")
+        return
+
+    url = "https://api.groq.com/openai/v1/chat/completions"
+    headers = {
+        "Authorization": f"Bearer {groq_api_key}",
+        "Content-Type": "application/json"
+    }
+    payload = {
+        "model": "llama-3.3-70b-versatile",
+        "messages": list(memoria_ia[usuario_id])
+    }
+
+    try:
+        async with aiohttp.ClientSession() as session:
+            async with session.post(url, json=payload, headers=headers) as resp:
+                if resp.status == 200:
+                    data = await resp.json()
+                    respuesta_ia = data["choices"][0]["message"]["content"]
+                    
+                    # Guardar respuesta en la memoria
+                    memoria_ia[usuario_id].append({"role": "assistant", "content": respuesta_ia})
+                    
+                    # Truncar mensaje si excede el límite de Discord (2000 chars)
+                    if len(respuesta_ia) > 2000:
+                        respuesta_ia = respuesta_ia[:1990] + "..."
+                        
+                    await interaction.followup.send(f"🤖 {respuesta_ia}")
+                else:
+                    error_txt = await resp.text()
+                    await interaction.followup.send("❌ Error al procesar la respuesta con la API de Groq.")
+                    print(f"Error Groq status {resp.status}: {error_txt}")
+    except Exception as e:
+        await interaction.followup.send("❌ Ocurrió un error inesperado al conectar con la IA.")
+        print(f"Excepción en /ia: {e}")
 
 # =====================================================================
 # 🧹 2. LIMPIAR MEMORIA (/limpiar)
@@ -97,8 +129,7 @@ async def resumen(
 ):
     await interaction.response.defer()
     selected_mode = modo.value if modo else "defecto"
-    # Aquí integrarías la lógica de recolección de mensajes e IA que armamos antes
-    await interaction.followup.send(f"📊 **Resumen generado** (Filtro: `{selected_mode}`)...")
+    await interaction.followup.send(f"📊 **Procesando resumen** con filtro `{selected_mode}`...")
 
 # =====================================================================
 # 🛠️ 4. GESTIÓN Y ORGANIZACIÓN (/gestionar)
@@ -123,25 +154,28 @@ async def gestionar(
     nombre: Optional[str] = None, canales: Optional[str] = None
 ):
     await interaction.response.defer(ephemeral=True)
+    
     if modo.value == "crear_canales":
         if not nombres:
-            return await interaction.followup.send("❌ Debes especificar los `nombres`.")
-        lista_nombres = [n.strip() for n in nombres.split(",")][:5] # Máximo 5
+            return await interaction.followup.send("❌ Debes indicar el parámetro `nombres`.")
+        
+        lista_nombres = [n.strip() for n in nombres.split(",") if n.strip()][:5]
         for nom in lista_nombres:
             await interaction.guild.create_text_channel(name=nom, category=categoria)
-        await interaction.followup.send(f"✅ Se crearon {len(lista_nombres)} canales.")
+        
+        await interaction.followup.send(f"✅ Se crearon {len(lista_nombres)} canal(es) de texto.")
 
     elif modo.value == "crear_categoria":
         if not nombre:
-            return await interaction.followup.send("❌ Debes especificar el `nombre` de la categoría.")
+            return await interaction.followup.send("❌ Debes indicar el parámetro `nombre` para la nueva categoría.")
+        
         nueva_cat = await interaction.guild.create_category(name=nombre)
-        # La lógica de mover canales requeriría procesar el string 'canales' si se usa texto
-        await interaction.followup.send(f"✅ Categoría **{nueva_cat.name}** creada.")
+        await interaction.followup.send(f"✅ Categoría **{nueva_cat.name}** creada con éxito.")
 
 @gestionar.error
 async def gestionar_error(interaction: discord.Interaction, error: app_commands.AppCommandError):
     if isinstance(error, app_commands.MissingPermissions):
-        await interaction.response.send_message("❌ Requiere el permiso de **Gestionar Canales**.", ephemeral=True)
+        await interaction.response.send_message("❌ Requieres el permiso de **Gestionar Canales**.", ephemeral=True)
 
 # =====================================================================
 # 🗑️ 5. PURGA Y ELIMINACIÓN (/eliminar)
@@ -154,7 +188,8 @@ class ConfirmarEliminacion(discord.ui.View):
     @discord.ui.button(label="Seguro", style=discord.ButtonStyle.danger)
     async def confirm(self, interaction: discord.Interaction, button: discord.ui.Button):
         await interaction.response.edit_message(content=f"🗑️ Acción confirmada. Procesando eliminación ({self.target_info})...", view=None)
-        # Aquí va la lógica real de borrado de canales (interaction.channel.delete(), etc.)
+        if self.target_info == "actual":
+            await interaction.channel.delete()
 
     @discord.ui.button(label="Cancelar", style=discord.ButtonStyle.secondary)
     async def cancel(self, interaction: discord.Interaction, button: discord.ui.Button):
@@ -181,16 +216,16 @@ async def eliminar(
     if modo.value in ["actual", "especificos"] and not (perms.manage_channels or perms.administrator):
         return await interaction.response.send_message("❌ Requiere el permiso de **Gestionar Canales**.", ephemeral=True)
     if modo.value == "masivo" and not perms.administrator:
-        return await interaction.response.send_message("❌ El modo masivo requiere **Administrador**.", ephemeral=True)
+        return await interaction.response.send_message("❌ El modo masivo requiere el permiso de **Administrador**.", ephemeral=True)
 
     view = ConfirmarEliminacion(target_info=modo.value)
     await interaction.response.send_message(
-        f"⚠️ **¿Seguro que quieres eliminar ({modo.value})? Esta acción no se puede revertir.**",
+        f"⚠️ **¿Seguro que quieres proceder con la eliminación ({modo.value})? Esta acción no se puede deshacer.**",
         view=view, ephemeral=True
     )
 
 # =====================================================================
-# ❓ 6. AYUDA GLOBAL (/help)
+# ❓ 6. GUÍA Y MANUAL (/help)
 # =====================================================================
 @bot.tree.command(name="help", description="Muestra la guía completa de comandos")
 async def help_command(interaction: discord.Interaction):
@@ -203,23 +238,23 @@ async def help_command(interaction: discord.Interaction):
         name="💬 INTELIGENCIA ARTIFICIAL",
         value="• **/ia** `mensaje:` — Conversa con la IA. *(🟢 Todos)*\n"
               "• **/limpiar** `modo:` — Borra historial (`personal` o `todos`).\n"
-              "• **/resumen** `modo:` — Sintetiza el chat con filtros. *(🟢 Todos)*",
+              "• **/resumen** `modo:` — Sintetiza el chat usando filtros. *(🟢 Todos)*",
         inline=False
     )
     embed.add_field(
         name="🛠️ GESTIÓN Y ORGANIZACIÓN",
-        value="• **/gestionar** `modo:` — Crea y mueve canales/categorías. *(⚙️ Gestionar Canales)*",
+        value="• **/gestionar** `modo:` — Crea o mueve canales y categorías. *(⚙️ Gestionar Canales)*",
         inline=False
     )
     embed.add_field(
-        name="🗑️ ELIMINACIÓN DE CANALES",
-        value="• **/eliminar** `modo:` — `actual`, `especificos` o `masivo`. Requiere permisos.",
+        name="🗑️ PURGA Y ELIMINACIÓN DE CANALES",
+        value="• **/eliminar** `modo:` — `actual`, `especificos` *(⚙️ Gestionar Canales)* | `masivo` *(👑 Administrador)*",
         inline=False
     )
     embed.add_field(
         name="📂 COMANDOS PRE-EXISTENTES",
         value="• **.canales** `Nombre, Nombre, Nombre` — Crea canales en lote.\n"
-              "• **.categorias** — Lista las categorías del servidor.",
+              "• **.categorias** — Muestra las categorías existentes del servidor.",
         inline=False
     )
     await interaction.response.send_message(embed=embed)
@@ -232,23 +267,28 @@ async def help_command(interaction: discord.Interaction):
 async def canales(ctx, *, nombres: str = None):
     """Comando organizador clásico: .canales Nombre, Nombre, Nombre"""
     if not nombres:
-        await ctx.send("⚠️ Por favor, aclara los nombres: `.canales Nombre, Nombre, Nombre`")
+        await ctx.send("⚠️ Por favor, especifica los nombres: `.canales Nombre, Nombre, Nombre`")
         return
     
-    lista = [n.strip() for n in nombres.split(",")][:5]
+    lista = [n.strip() for n in nombres.split(",") if n.strip()][:5]
     for nom in lista:
         await ctx.guild.create_text_channel(name=nom, category=ctx.channel.category)
-    await ctx.send(f"✅ Se han creado {len(lista)} canales en esta categoría.")
+    await ctx.send(f"✅ Se han creado {len(lista)} canal(es) en esta categoría.")
 
 @bot.command()
 @commands.has_permissions(manage_channels=True)
 async def categorias(ctx):
-    """Lista las categorías del servidor y sus canales"""
+    """Lista las categorías del servidor y el número de canales"""
     lista_cat = [f"📁 **{cat.name}** ({len(cat.channels)} canales)" for cat in ctx.guild.categories]
-    texto = "\n".join(lista_cat) if lista_cat else "No hay categorías."
+    texto = "\n".join(lista_cat) if lista_cat else "No hay categorías en este servidor."
     await ctx.send(f"📋 **Categorías del servidor:**\n{texto}")
 
-# --- INICIO DEL BOT ---
+# =====================================================================
+# 🚀 EJECUCIÓN DEL BOT
+# =====================================================================
 if __name__ == "__main__":
-    TOKEN = "DISCORD_TOKEN"
-    bot.run(TOKEN)
+    TOKEN = os.getenv("DISCORD_TOKEN")
+    if not TOKEN:
+        print("❌ ERROR: No se encontró la variable de entorno 'DISCORD_TOKEN'. Configúrala en Render.")
+    else:
+        bot.run(TOKEN)
