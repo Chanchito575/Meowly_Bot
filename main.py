@@ -1,6 +1,8 @@
 import os
 import asyncio
 import collections
+import threading
+from http.server import HTTPServer, BaseHTTPRequestHandler
 from typing import Optional
 from datetime import datetime, timezone, timedelta
 
@@ -9,7 +11,29 @@ from discord import app_commands
 from discord.ext import commands
 import aiohttp
 
-# --- CONFIGURACIÓN E INICIALIZACIÓN DEL BOT ---
+# =====================================================================
+# 🌐 SERVIDOR DUMMY (Evita el error "No open ports detected" en Render)
+# =====================================================================
+class DummyServer(BaseHTTPRequestHandler):
+    def do_GET(self):
+        self.send_response(200)
+        self.end_headers()
+        self.wfile.write(b"Bot activo de Chanchito575")
+
+    def log_message(self, format, *args):
+        pass # Silencia logs HTTP para mantener limpia la consola
+
+def keep_alive():
+    port = int(os.environ.get("PORT", 8080))
+    server = HTTPServer(("0.0.0.0", port), DummyServer)
+    server.serve_forever()
+
+# Inicia el servidor HTTP en segundo plano antes de arrancar el bot
+threading.Thread(target=keep_alive, daemon=True).start()
+
+# =====================================================================
+# ⚙️ CONFIGURACIÓN E INICIALIZACIÓN DEL BOT
+# =====================================================================
 intents = discord.Intents.default()
 intents.message_content = True
 intents.guilds = True
