@@ -1,38 +1,13 @@
 import os
 import collections
-import threading
 from typing import Optional
 from datetime import datetime, timezone, timedelta
-from http.server import BaseHTTPRequestHandler
-from socketserver import TCPServer
 
 import discord
 from discord import app_commands
 from discord.ext import commands
 import aiohttp
-
-# =====================================================================
-# 🌐 SERVIDOR DUMMY (Mantiene el bot activo en Render)
-# =====================================================================
-class DummyServer(BaseHTTPRequestHandler):
-    def do_GET(self):
-        self.send_response(200)
-        self.send_header("Content-type", "text/plain")
-        self.end_headers()
-        self.wfile.write(b"Bot activo de Chanchito575")
-
-    def log_message(self, format, *args):
-        pass 
-
-class ReusableTCPServer(TCPServer):
-    allow_reuse_address = True
-
-def keep_alive():
-    port = int(os.environ.get("PORT", 8080))
-    server = ReusableTCPServer(("0.0.0.0", port), DummyServer)
-    server.serve_forever()
-
-threading.Thread(target=keep_alive, daemon=True).start()
+from duckduckgo_search import DDGS
 
 # =====================================================================
 # ⚙️ CONFIGURACIÓN DEL BOT
@@ -44,6 +19,8 @@ intents.guilds = True
 bot = commands.Bot(command_prefix=".", intents=intents, help_command=None)
 memoria_ia = collections.defaultdict(lambda: collections.deque(maxlen=20))
 
+MODELO_IA = "llama-3.3-70b-versatile"
+
 @bot.event
 async def on_ready():
     await bot.tree.sync()
@@ -51,7 +28,28 @@ async def on_ready():
     await bot.change_presence(status=discord.Status.online, activity=actividad)
     print(f"✅ Bot conectado con éxito como {bot.user}")
 
-# Función auxiliar para consultar a Groq
+# =====================================================================
+# 🔍 BÚSQUEDA WEB GRATUITA (DUCKDUCKGO)
+# =====================================================================
+def buscar_en_web(consulta: str) -> str:
+    """Realiza una búsqueda en DuckDuckGo y devuelve los titulares más recientes."""
+    try:
+        with DDGS() as ddgs:
+            resultados = list(ddgs.text(consulta, max_results=3))
+            if not resultados:
+                return "No se encontraron resultados recientes en la web."
+            
+            texto_busqueda = ""
+            for i, res in enumerate(resultados, 1):
+                texto_busqueda += f"Fuente {i}: {res.get('title', '')}\n{res.get('body', '')}\n\n"
+            return texto_busqueda
+    except Exception as e:
+        print(f"Error en búsqueda web: {e}")
+        return "No se pudo realizar la búsqueda web en este momento."
+
+# =====================================================================
+# 🤖 CONSULTA A GROQ (LLAMA 3.3)
+# =====================================================================
 async def consultar_groq(prompt_o_mensajes, es_resumen=False):
     groq_api_key = os.getenv("GROQ_API_KEY")
     if not groq_api_key:
@@ -65,15 +63,28 @@ async def consultar_groq(prompt_o_mensajes, es_resumen=False):
 
     if es_resumen:
         payload_messages = [
-            {"role": "system", "content": "Eres un asistente que resume conversaciones de Discord de forma clara, breve y organizada en viñetas."},
+            {
+                "role": "system",
+                "content": (
+                    "Eres Carek, un asistente de Discord analítico y claro. "
+                    "Resumes conversaciones estructurando las ideas en listas ordenadas con viñetas."
+                )
+            },
             {"role": "user", "content": f"Por favor resume las siguientes conversaciones del chat:\n\n{prompt_o_mensajes}"}
         ]
     else:
-        payload_messages = list(prompt_o_mensajes)
+        payload_messages = [
+            {
+                "role": "system",
+                "content": "Eres Carek, un asistente virtual útil, fluido y moderno para comunidades de Discord."
+            }
+        ] + list(prompt_o_mensajes)
 
     payload = {
-        "model": "llama-3.3-70b-versatile",
-        "messages": payload_messages
+        "model": MODELO_IA,
+        "messages": payload_messages,
+        "temperature": 0.7,
+        "max_tokens": 1024
     }
 
     try:
@@ -104,21 +115,35 @@ def parsear_fecha(txt: str) -> Optional[datetime]:
     return None
 
 # =====================================================================
-# 💬 1. INTELIGENCIA ARTIFICIAL (/ia)
+# 💬 1. INTELIGENCIA ARTIFICIAL CON BÚSQUEDA WEB (/ia)
 # =====================================================================
-@bot.tree.command(name="ia", description="Habla con la Inteligencia Artificial")
-@app_commands.describe(mensaje="Tu mensaje o pregunta")
+@bot.tree.command(name="ia", description="Habla con la IA (con acceso a información en tiempo real)")
+@app_commands.describe(mensaje="Tu pregunta o consulta")
 async def ia(interaction: discord.Interaction, mensaje: str):
     await interaction.response.defer()
-    usuario_id = interaction.user.id
-    memoria_ia[usuario_id].append({"role": "user", "content": mensaje})
     
+    # 1. Busca información fresca en DuckDuckGo
+    info_web = buscar_en_web(mensaje)
+    
+    # 2. Prepara la consulta para la IA
+    prompt_con_web = (
+        f"Información obtenida de la web en tiempo real:\n{info_web}\n\n"
+        f"Pregunta del usuario: {mensaje}\n\n"
+        "Responde a la pregunta del usuario utilizando la información de la web si es relevante."
+    )
+    
+    usuario_id = interaction.user.id
+    memoria_ia[usuario_id].append({"role": "user", "content": prompt_con_web})
+    
+    # 3. Llama a Groq
     respuesta = await consultar_groq(memoria_ia[usuario_id], es_resumen=False)
+    
     if not respuesta.startswith("❌"):
         memoria_ia[usuario_id].append({"role": "assistant", "content": respuesta})
     
     if len(respuesta) > 2000:
         respuesta = respuesta[:1990] + "..."
+        
     await interaction.followup.send(f"🤖 {respuesta}")
 
 # =====================================================================
@@ -132,6 +157,7 @@ async def limpiar_mi_historial(interaction: discord.Interaction):
     await interaction.response.send_message("🧹 Tu historial ha sido borrado.", ephemeral=True)
 
 @grupo_limpiar.command(name="todo", description="Borra la memoria global de todos (Admins)")
+@app_commands.default_permissions(administrator=True)
 @app_commands.checks.has_permissions(administrator=True)
 async def limpiar_todo(interaction: discord.Interaction):
     memoria_ia.clear()
@@ -252,9 +278,10 @@ bot.tree.add_command(grupo_resumen)
 # =====================================================================
 # 🛠️ 4. GESTIÓN DE CANALES Y CATEGORÍAS (/gestionar)
 # =====================================================================
-grupo_gestionar = app_commands.Group(name="gestionar", description="Crea canales y categorías")
+grupo_gestionar = app_commands.Group(name="gestionar", description="Crea, renombra y organiza canales y categorías")
 
 @grupo_gestionar.command(name="canales", description="Crea hasta 5 canales de texto")
+@app_commands.default_permissions(manage_channels=True)
 @app_commands.checks.has_permissions(manage_channels=True)
 @app_commands.describe(nombres="Nombres separados por comas", categoria="Categoría donde ubicarlos (opcional)")
 async def crear_canales(interaction: discord.Interaction, nombres: str, categoria: Optional[discord.CategoryChannel] = None):
@@ -270,12 +297,26 @@ async def crear_canales(interaction: discord.Interaction, nombres: str, categori
     await interaction.followup.send(f"✅ Canales creados{cat_txt}: {', '.join(creados)}")
 
 @grupo_gestionar.command(name="categoria", description="Crea una categoría nueva")
+@app_commands.default_permissions(manage_channels=True)
 @app_commands.checks.has_permissions(manage_channels=True)
 @app_commands.describe(nombre="Nombre de la nueva categoría")
 async def crear_categoria(interaction: discord.Interaction, nombre: str):
     await interaction.response.defer(ephemeral=True)
     nueva_cat = await interaction.guild.create_category(name=nombre)
     await interaction.followup.send(f"✅ Categoría **{nueva_cat.name}** creada con éxito.")
+
+@grupo_gestionar.command(name="renombrar", description="Cambia el nombre de un canal existente")
+@app_commands.default_permissions(manage_channels=True)
+@app_commands.checks.has_permissions(manage_channels=True)
+@app_commands.describe(canal="Canal que deseas renombrar", nuevo_nombre="Nuevo nombre para el canal")
+async def renombrar_canal(interaction: discord.Interaction, canal: discord.abc.GuildChannel, nuevo_nombre: str):
+    await interaction.response.defer(ephemeral=True)
+    nombre_antiguo = canal.name
+    try:
+        await canal.edit(name=nuevo_nombre)
+        await interaction.followup.send(f"✏️ El canal **#{nombre_antiguo}** ahora se llama {canal.mention}.")
+    except Exception as e:
+        await interaction.followup.send(f"❌ Error al renombrar el canal: {e}")
 
 bot.tree.add_command(grupo_gestionar)
 
@@ -304,12 +345,14 @@ class ConfirmarEliminacion(discord.ui.View):
         await interaction.response.edit_message(content="❌ Operación cancelada.", view=None)
 
 @grupo_eliminar.command(name="canal", description="Borra por completo este canal")
+@app_commands.default_permissions(manage_channels=True)
 @app_commands.checks.has_permissions(manage_channels=True)
 async def borrar_canal(interaction: discord.Interaction):
     view = ConfirmarEliminacion(accion="canal")
     await interaction.response.send_message("⚠️ **¿Estás seguro de eliminar este canal por completo?**", view=view, ephemeral=True)
 
 @grupo_eliminar.command(name="mensajes", description="Limpia los últimos 100 mensajes de este canal")
+@app_commands.default_permissions(manage_messages=True)
 @app_commands.checks.has_permissions(manage_messages=True)
 async def purgar_mensajes(interaction: discord.Interaction):
     view = ConfirmarEliminacion(accion="mensajes")
@@ -318,18 +361,47 @@ async def purgar_mensajes(interaction: discord.Interaction):
 bot.tree.add_command(grupo_eliminar)
 
 # =====================================================================
-# ❓ 6. AYUDA (/help)
+# 📌 MANEJO DE ERRORES DE PERMISOS
+# =====================================================================
+@bot.tree.error
+async def on_app_command_error(interaction: discord.Interaction, error: app_commands.AppCommandError):
+    if isinstance(error, app_commands.MissingPermissions):
+        mensaje_error = "❌ No tienes los permisos necesarios para usar este comando."
+        if interaction.response.is_done():
+            await interaction.followup.send(mensaje_error, ephemeral=True)
+        else:
+            await interaction.response.send_message(mensaje_error, ephemeral=True)
+    else:
+        print(f"Error no controlado: {error}")
+
+# =====================================================================
+# 📬 6. DETECCIÓN DE MENSAJES DE CHAT
+# =====================================================================
+@bot.event
+async def on_message(message: discord.Message):
+    if message.author.bot or not message.guild:
+        return
+
+    contenido_lc = message.content.lower()
+
+    if "se define en el dashboard" in contenido_lc or "dashboard" in contenido_lc:
+        await message.channel.send("📌 **Carek:** La información y configuraciones generales del bot se definen desde el panel de administración.")
+
+    await bot.process_commands(message)
+
+# =====================================================================
+# ❓ 7. AYUDA (/help)
 # =====================================================================
 @bot.tree.command(name="help", description="Guía de uso del bot")
 async def help_command(interaction: discord.Interaction):
     embed = discord.Embed(
         title="🤖 MANUAL DE COMANDOS",
-        description="Estructura limpia con subcomandos independientes:",
+        description="Bot con IA conectada a la web en tiempo real:",
         color=discord.Color.blue()
     )
-    embed.add_field(name="💬 IA", value="`/ia` • `/limpiar mi_historial` • `/limpiar todo`", inline=False)
+    embed.add_field(name="💬 IA", value="`/ia` (con búsqueda en vivo) • `/limpiar mi_historial` • `/limpiar todo`", inline=False)
     embed.add_field(name="📊 Resumen", value="`/resumen defecto` • `/resumen hoy` • `/resumen dia`\n`/resumen rango` • `/resumen mensajes` • `/resumen tiempo`", inline=False)
-    embed.add_field(name="🛠️ Gestión", value="`/gestionar canales` • `/gestionar categoria`", inline=False)
+    embed.add_field(name="🛠️ Gestión", value="`/gestionar canales` • `/gestionar categoria` • `/gestionar renombrar`", inline=False)
     embed.add_field(name="🗑️ Eliminación", value="`/eliminar canal` • `/eliminar mensajes`", inline=False)
     await interaction.response.send_message(embed=embed)
 
