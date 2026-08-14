@@ -8,6 +8,7 @@ from discord import app_commands
 from discord.ext import commands
 import aiohttp
 from duckduckgo_search import DDGS
+from keep_alive import keep_alive  # <--- Servidor web Flask para Render
 
 # =====================================================================
 # ⚙️ CONFIGURACIÓN DEL BOT
@@ -413,4 +414,5 @@ if __name__ == "__main__":
     if not TOKEN:
         print("❌ ERROR: Falta la variable DISCORD_TOKEN.")
     else:
+        keep_alive()  # <-- Levanta el servidor Flask para que Render enlace el puerto
         bot.run(TOKEN)
