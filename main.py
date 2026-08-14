@@ -1,10 +1,9 @@
 import os
-import re
 import collections
 import threading
 from typing import Optional
 from datetime import datetime, timezone, timedelta
-from http.server import HTTPServer, BaseHTTPRequestHandler
+from http.server import BaseHTTPRequestHandler
 from socketserver import TCPServer
 
 import discord
@@ -13,7 +12,7 @@ from discord.ext import commands
 import aiohttp
 
 # =====================================================================
-# 🌐 SERVIDOR DUMMY ROBUSTO (Evita el error de puerto en Render)
+# 🌐 SERVIDOR DUMMY (Mantiene el bot activo en Render)
 # =====================================================================
 class DummyServer(BaseHTTPRequestHandler):
     def do_GET(self):
@@ -36,21 +35,19 @@ def keep_alive():
 threading.Thread(target=keep_alive, daemon=True).start()
 
 # =====================================================================
-# ⚙️ CONFIGURACIÓN E INICIALIZACIÓN
+# ⚙️ CONFIGURACIÓN DEL BOT
 # =====================================================================
 intents = discord.Intents.default()
 intents.message_content = True
 intents.guilds = True
 
 bot = commands.Bot(command_prefix=".", intents=intents, help_command=None)
-
-# Memoria conversación IA (Límite 20 msgs por usuario)
 memoria_ia = collections.defaultdict(lambda: collections.deque(maxlen=20))
 
 @bot.event
 async def on_ready():
     await bot.tree.sync()
-    actividad = discord.Game(name="creado o algo asi por Chanchito575")
+    actividad = discord.Game(name="creado por Chanchito575")
     await bot.change_presence(status=discord.Status.online, activity=actividad)
     print(f"✅ Bot conectado con éxito como {bot.user}")
 
@@ -90,52 +87,6 @@ async def consultar_groq(prompt_o_mensajes, es_resumen=False):
     except Exception as e:
         return f"❌ Error de conexión: {e}"
 
-# =====================================================================
-# 💬 1. INTELIGENCIA ARTIFICIAL (/ia)
-# =====================================================================
-@bot.tree.command(name="ia", description="Habla con la Inteligencia Artificial")
-@app_commands.describe(mensaje="Mensaje o pregunta para la IA")
-async def ia(interaction: discord.Interaction, mensaje: str):
-    await interaction.response.defer()
-    
-    usuario_id = interaction.user.id
-    memoria_ia[usuario_id].append({"role": "user", "content": mensaje})
-    
-    respuesta = await consultar_groq(memoria_ia[usuario_id], es_resumen=False)
-    
-    if not respuesta.startswith("❌"):
-        memoria_ia[usuario_id].append({"role": "assistant", "content": respuesta})
-    
-    if len(respuesta) > 2000:
-        respuesta = respuesta[:1990] + "..."
-        
-    await interaction.followup.send(f"🤖 {respuesta}")
-
-# =====================================================================
-# 🧹 2. LIMPIAR MEMORIA (/limpiar)
-# =====================================================================
-@bot.tree.command(name="limpiar", description="Reinicia la memoria de la IA")
-@app_commands.describe(modo="Tipo de limpieza")
-@app_commands.choices(
-    modo=[
-        app_commands.Choice(name="personal - Borra tu historial", value="personal"),
-        app_commands.Choice(name="todos - Borra la memoria global (Solo Admins)", value="todos")
-    ]
-)
-async def limpiar(interaction: discord.Interaction, modo: app_commands.Choice[str]):
-    if modo.value == "todos":
-        if not interaction.user.guild_permissions.administrator:
-            await interaction.response.send_message("❌ Requiere el permiso de **Administrador**.", ephemeral=True)
-            return
-        memoria_ia.clear()
-        await interaction.response.send_message("🧹 Memoria global de la IA reiniciada.")
-    else:
-        memoria_ia[interaction.user.id].clear()
-        await interaction.response.send_message("🧹 Tu historial de conversación ha sido borrado.", ephemeral=True)
-
-# =====================================================================
-# 📊 3. RESUMEN INTELIGENTE FUNCIONAL (/resumen)
-# =====================================================================
 def parsear_fecha(txt: str) -> Optional[datetime]:
     txt = txt.strip()
     partes = txt.split("/")
@@ -152,149 +103,198 @@ def parsear_fecha(txt: str) -> Optional[datetime]:
         return None
     return None
 
-@bot.tree.command(name="resumen", description="Genera un resumen del chat procesado por la IA")
-@app_commands.describe(
-    modo="Filtro a aplicar", fecha="Fecha (DD/MM o DD/MM/AAAA)",
-    inicio="Inicio (DD/MM)", fin="Fin (DD/MM)",
-    cantidad="N° de mensajes (máx 500)", tiempo="Minutos u horas (N)"
-)
-@app_commands.choices(
-    modo=[
-        app_commands.Choice(name="defecto - Últimos 100 msgs", value="defecto"),
-        app_commands.Choice(name="dia - Un día específico", value="dia"),
-        app_commands.Choice(name="fechas - Rango inicio y fin (máx 10 días)", value="fechas"),
-        app_commands.Choice(name="mensajes - N° de mensajes", value="mensajes"),
-        app_commands.Choice(name="horas - Últimas N horas", value="horas"),
-        app_commands.Choice(name="minutos - Últimos N minutos", value="minutos"),
-        app_commands.Choice(name="hoy - Mensajes de hoy", value="hoy")
-    ]
-)
-async def resumen(
-    interaction: discord.Interaction,
-    modo: Optional[app_commands.Choice[str]] = None,
-    fecha: Optional[str] = None, inicio: Optional[str] = None, fin: Optional[str] = None,
-    cantidad: Optional[int] = None, tiempo: Optional[int] = None
-):
+# =====================================================================
+# 💬 1. INTELIGENCIA ARTIFICIAL (/ia)
+# =====================================================================
+@bot.tree.command(name="ia", description="Habla con la Inteligencia Artificial")
+@app_commands.describe(mensaje="Tu mensaje o pregunta")
+async def ia(interaction: discord.Interaction, mensaje: str):
     await interaction.response.defer()
-    opcion = modo.value if modo else "defecto"
+    usuario_id = interaction.user.id
+    memoria_ia[usuario_id].append({"role": "user", "content": mensaje})
     
-    ahora = datetime.now(timezone.utc)
-    limite_mensajes = 200
-    after_dt = None
-    before_dt = None
+    respuesta = await consultar_groq(memoria_ia[usuario_id], es_resumen=False)
+    if not respuesta.startswith("❌"):
+        memoria_ia[usuario_id].append({"role": "assistant", "content": respuesta})
+    
+    if len(respuesta) > 2000:
+        respuesta = respuesta[:1990] + "..."
+    await interaction.followup.send(f"🤖 {respuesta}")
 
-    # Lógica de cálculo de rango/fechas
-    if opcion == "defecto":
-        limite_mensajes = 100
-    elif opcion == "hoy":
-        after_dt = ahora.replace(hour=0, minute=0, second=0, microsecond=0)
-    elif opcion == "minutos" and tiempo:
-        after_dt = ahora - timedelta(minutes=tiempo)
-    elif opcion == "horas" and tiempo:
-        after_dt = ahora - timedelta(hours=tiempo)
-    elif opcion == "mensajes" and cantidad:
-        limite_mensajes = min(cantidad, 500)
-    elif opcion == "dia" and fecha:
-        f_inicio = parsear_fecha(fecha)
-        if not f_inicio:
-            return await interaction.followup.send("❌ Formato de fecha inválido. Usa `DD/MM` o `DD/MM/AAAA`.")
-        after_dt = f_inicio
-        before_dt = f_inicio + timedelta(days=1)
-    elif opcion == "fechas" and inicio and fin:
-        f_i = parsear_fecha(inicio)
-        f_f = parsear_fecha(fin)
-        if not f_i or not f_f:
-            return await interaction.followup.send("❌ Formato de fechas inválido.")
-        if (f_f - f_i).days > 10:
-            return await interaction.followup.send("❌ El rango entre fechas no puede superar los **10 días**.")
-        after_dt = f_i
-        before_dt = f_f + timedelta(days=1)
+# =====================================================================
+# 🧹 2. LIMPIAR MEMORIA (/limpiar)
+# =====================================================================
+grupo_limpiar = app_commands.Group(name="limpiar", description="Borra la memoria del bot")
 
-    # Recopilar mensajes reales del canal
+@grupo_limpiar.command(name="mi_historial", description="Borra únicamente tu historial con la IA")
+async def limpiar_mi_historial(interaction: discord.Interaction):
+    memoria_ia[interaction.user.id].clear()
+    await interaction.response.send_message("🧹 Tu historial ha sido borrado.", ephemeral=True)
+
+@grupo_limpiar.command(name="todo", description="Borra la memoria global de todos (Admins)")
+@app_commands.checks.has_permissions(administrator=True)
+async def limpiar_todo(interaction: discord.Interaction):
+    memoria_ia.clear()
+    await interaction.response.send_message("🧹 Memoria global de la IA reiniciada.")
+
+bot.tree.add_command(grupo_limpiar)
+
+# =====================================================================
+# 📊 3. RESUMEN (/resumen)
+# =====================================================================
+grupo_resumen = app_commands.Group(name="resumen", description="Resúmenes inteligentes del chat")
+
+async def obtener_resumen_de_rango(channel, after_dt, before_dt) -> Optional[str]:
     mensajes_texto = []
-    async for msg in interaction.channel.history(limit=limite_mensajes, after=after_dt, before=before_dt, oldest_first=False):
+    async for msg in channel.history(limit=500, after=after_dt, before=before_dt, oldest_first=True):
         if not msg.author.bot and msg.content.strip():
             mensajes_texto.append(f"{msg.author.display_name}: {msg.content}")
 
     if not mensajes_texto:
-        return await interaction.followup.send("⚠️ No se encontraron mensajes en el rango especificado para resumir.")
+        return None
 
-    mensajes_texto.reverse() # Orden cronológico
-    bloque_chat = "\n".join(mensajes_texto[:300]) # Límite razonable para la API
+    texto_completo = "\n".join(mensajes_texto)
+    palabras = texto_completo.split()
 
-    resumen_generado = await consultar_groq(bloque_chat, es_resumen=True)
+    if len(palabras) > 2000:
+        texto_recortado = " ".join(palabras[:2000])
+    else:
+        texto_recortado = texto_completo
+
+    return await consultar_groq(texto_recortado, es_resumen=True)
+
+async def procesar_resumen_unificado(interaction: discord.Interaction, titulo: str, limite: int = 200, after_dt=None, before_dt=None):
+    await interaction.response.defer()
+    resumen_txt = await obtener_resumen_de_rango(interaction.channel, after_dt, before_dt)
     
-    if len(resumen_generado) > 2000:
-        resumen_generado = resumen_generado[:1990] + "..."
+    if not resumen_txt:
+        return await interaction.followup.send(f"📌 **{titulo}**\n*Sin actividad/mensajes registrados.*")
 
-    await interaction.followup.send(f"📊 **Resumen del chat:**\n\n{resumen_generado}")
+    resultado = f"📌 **{titulo}**\n{resumen_txt}"
+    if len(resultado) > 2000:
+        resultado = resultado[:1990] + "..."
+    await interaction.followup.send(resultado)
+
+@grupo_resumen.command(name="defecto", description="Resumen de los últimos 100 mensajes")
+async def resumen_defecto(interaction: discord.Interaction):
+    await procesar_resumen_unificado(interaction, titulo="Resumen de los últimos 100 mensajes", limite=100)
+
+@grupo_resumen.command(name="hoy", description="Resumen de los mensajes de hoy")
+async def resumen_hoy(interaction: discord.Interaction):
+    ahora = datetime.now(timezone.utc)
+    inicio_hoy = ahora.replace(hour=0, minute=0, second=0, microsecond=0)
+    fecha_hoy = ahora.strftime("%d/%m")
+    await procesar_resumen_unificado(interaction, titulo=f"Resumen de hoy ({fecha_hoy})", after_dt=inicio_hoy)
+
+@grupo_resumen.command(name="dia", description="Resumen de un día específico")
+@app_commands.describe(fecha="DD/MM o DD/MM/AAAA")
+async def resumen_dia(interaction: discord.Interaction, fecha: str):
+    f_inicio = parsear_fecha(fecha)
+    if not f_inicio:
+        return await interaction.response.send_message("❌ Fecha inválida. Usa `DD/MM`.", ephemeral=True)
+    f_fin = f_inicio + timedelta(days=1)
+    await procesar_resumen_unificado(interaction, titulo=f"Resumen de {f_inicio.strftime('%d/%m')}", after_dt=f_inicio, before_dt=f_fin)
+
+@grupo_resumen.command(name="rango", description="Resumen día por día en un rango (máx 10 días)")
+@app_commands.describe(inicio="Inicio (DD/MM)", fin="Fin (DD/MM)")
+async def resumen_rango(interaction: discord.Interaction, inicio: str, fin: str):
+    f_i = parsear_fecha(inicio)
+    f_f = parsear_fecha(fin)
+    
+    if not f_i or not f_f:
+        return await interaction.response.send_message("❌ Fecha inválida.", ephemeral=True)
+    if f_i > f_f:
+        return await interaction.response.send_message("❌ La fecha de inicio debe ser anterior a la de fin.", ephemeral=True)
+    if (f_f - f_i).days > 10:
+        return await interaction.response.send_message("❌ El rango no puede superar los 10 días.", ephemeral=True)
+
+    await interaction.response.defer()
+    respuestas_dias = []
+    dia_actual = f_i
+
+    while dia_actual <= f_f:
+        siguiente_dia = dia_actual + timedelta(days=1)
+        resumen_dia_txt = await obtener_resumen_de_rango(interaction.channel, dia_actual, siguiente_dia)
+        etiqueta_fecha = dia_actual.strftime("%d/%m")
+        
+        if resumen_dia_txt:
+            respuestas_dias.append(f"📌 **Resumen de {etiqueta_fecha}**\n{resumen_dia_txt}")
+        else:
+            respuestas_dias.append(f"📌 **Resumen de {etiqueta_fecha}**\n*Sin actividad/mensajes registrados.*")
+        dia_actual = siguiente_dia
+
+    resultado_final = "\n\n".join(respuestas_dias)
+    if len(resultado_final) > 2000:
+        resultado_final = resultado_final[:1990] + "..."
+    await interaction.followup.send(resultado_final)
+
+@grupo_resumen.command(name="mensajes", description="Resumen por cantidad de mensajes")
+@app_commands.describe(cantidad="Cantidad de mensajes (máx 500)")
+async def resumen_mensajes(interaction: discord.Interaction, cantidad: int):
+    limite = min(cantidad, 500)
+    await procesar_resumen_unificado(interaction, titulo=f"Resumen de los últimos {limite} mensajes", limite=limite)
+
+@grupo_resumen.command(name="tiempo", description="Resumen por horas o minutos transcurridos")
+@app_commands.describe(unidad="Horas o Minutos", valor="Cantidad de tiempo")
+@app_commands.choices(unidad=[app_commands.Choice(name="Horas", value="horas"), app_commands.Choice(name="Minutos", value="minutos")])
+async def resumen_tiempo(interaction: discord.Interaction, unidad: app_commands.Choice[str], valor: int):
+    ahora = datetime.now(timezone.utc)
+    if unidad.value == "horas":
+        after_dt = ahora - timedelta(hours=valor)
+        titulo_txt = f"Resumen de las últimas {valor} hora(s)"
+    else:
+        after_dt = ahora - timedelta(minutes=valor)
+        titulo_txt = f"Resumen de los últimos {valor} minuto(s)"
+    await procesar_resumen_unificado(interaction, titulo=titulo_txt, after_dt=after_dt)
+
+bot.tree.add_command(grupo_resumen)
 
 # =====================================================================
-# 🛠️ 4. GESTIÓN REAL DE CANALES Y CATEGORÍAS (/gestionar)
+# 🛠️ 4. GESTIÓN DE CANALES Y CATEGORÍAS (/gestionar)
 # =====================================================================
-@bot.tree.command(name="gestionar", description="Crea y organiza canales y categorías en el servidor")
+grupo_gestionar = app_commands.Group(name="gestionar", description="Crea canales y categorías")
+
+@grupo_gestionar.command(name="canales", description="Crea hasta 5 canales de texto")
 @app_commands.checks.has_permissions(manage_channels=True)
-@app_commands.describe(
-    modo="Acción a realizar",
-    nombres="Nombres de canales separados por coma (ej: general, memes)",
-    categoria="Categoría destino donde ubicar los canales",
-    nombre="Nombre para crear una nueva categoría"
-)
-@app_commands.choices(
-    modo=[
-        app_commands.Choice(name="crear_canales - Crear canales de texto", value="crear_canales"),
-        app_commands.Choice(name="crear_categoria - Crear categoría nueva", value="crear_categoria")
-    ]
-)
-async def gestionar(
-    interaction: discord.Interaction,
-    modo: app_commands.Choice[str],
-    nombres: Optional[str] = None,
-    categoria: Optional[discord.CategoryChannel] = None,
-    nombre: Optional[str] = None
-):
+@app_commands.describe(nombres="Nombres separados por comas", categoria="Categoría donde ubicarlos (opcional)")
+async def crear_canales(interaction: discord.Interaction, nombres: str, categoria: Optional[discord.CategoryChannel] = None):
     await interaction.response.defer(ephemeral=True)
+    lista_nombres = [n.strip() for n in nombres.split(",") if n.strip()][:5]
+    creados = []
+    
+    for nom in lista_nombres:
+        ch = await interaction.guild.create_text_channel(name=nom, category=categoria)
+        creados.append(ch.mention)
+    
+    cat_txt = f" en **{categoria.name}**" if categoria else ""
+    await interaction.followup.send(f"✅ Canales creados{cat_txt}: {', '.join(creados)}")
 
-    if modo.value == "crear_canales":
-        if not nombres:
-            return await interaction.followup.send("❌ Especifica el parámetro `nombres` separados por comas.")
-        
-        lista_nombres = [n.strip() for n in nombres.split(",") if n.strip()][:5]
-        creados = []
-        for nom in lista_nombres:
-            ch = await interaction.guild.create_text_channel(name=nom, category=categoria)
-            creados.append(ch.mention)
-        
-        cat_txt = f" en la categoría **{categoria.name}**" if categoria else ""
-        await interaction.followup.send(f"✅ Canales creados con éxito{cat_txt}: {', '.join(creados)}")
+@grupo_gestionar.command(name="categoria", description="Crea una categoría nueva")
+@app_commands.checks.has_permissions(manage_channels=True)
+@app_commands.describe(nombre="Nombre de la nueva categoría")
+async def crear_categoria(interaction: discord.Interaction, nombre: str):
+    await interaction.response.defer(ephemeral=True)
+    nueva_cat = await interaction.guild.create_category(name=nombre)
+    await interaction.followup.send(f"✅ Categoría **{nueva_cat.name}** creada con éxito.")
 
-    elif modo.value == "crear_categoria":
-        if not nombre:
-            return await interaction.followup.send("❌ Debes indicar el parámetro `nombre` para la nueva categoría.")
-        
-        nueva_cat = await interaction.guild.create_category(name=nombre)
-        await interaction.followup.send(f"✅ Categoría **{nueva_cat.name}** creada correctamente.")
-
-@gestionar.error
-async def gestionar_error(interaction: discord.Interaction, error: app_commands.AppCommandError):
-    if isinstance(error, app_commands.MissingPermissions):
-        await interaction.response.send_message("❌ Requieres el permiso de **Gestionar Canales**.", ephemeral=True)
+bot.tree.add_command(grupo_gestionar)
 
 # =====================================================================
-# 🗑️ 5. PURGA Y ELIMINACIÓN (/eliminar)
+# 🗑️ 5. ELIMINACIÓN Y BORRADO (/eliminar)
 # =====================================================================
+grupo_eliminar = app_commands.Group(name="eliminar", description="Opciones de borrado y purga")
+
 class ConfirmarEliminacion(discord.ui.View):
-    def __init__(self, accion, canal=None):
+    def __init__(self, accion):
         super().__init__(timeout=30)
         self.accion = accion
-        self.canal = canal
 
-    @discord.ui.button(label="Sí, borrar", style=discord.ButtonStyle.danger)
+    @discord.ui.button(label="Sí, confirmar", style=discord.ButtonStyle.danger)
     async def confirm(self, interaction: discord.Interaction, button: discord.ui.Button):
-        if self.accion == "actual":
+        if self.accion == "canal":
             await interaction.response.send_message("🗑️ Borrando canal...")
             await interaction.channel.delete()
-        elif self.accion == "limpiar_msgs":
+        elif self.accion == "mensajes":
             await interaction.response.defer(ephemeral=True)
             deleted = await interaction.channel.purge(limit=100)
             await interaction.followup.send(f"🧹 Se borraron {len(deleted)} mensajes.", ephemeral=True)
@@ -303,55 +303,35 @@ class ConfirmarEliminacion(discord.ui.View):
     async def cancel(self, interaction: discord.Interaction, button: discord.ui.Button):
         await interaction.response.edit_message(content="❌ Operación cancelada.", view=None)
 
-@bot.tree.command(name="eliminar", description="Eliminación de canal o purga de mensajes")
-@app_commands.describe(modo="Acción a realizar")
-@app_commands.choices(
-    modo=[
-        app_commands.Choice(name="canal_actual - Elimina por completo este canal", value="actual"),
-        app_commands.Choice(name="mensajes - Borra los últimos 100 mensajes de este canal", value="limpiar_msgs")
-    ]
-)
-async def eliminar(interaction: discord.Interaction, modo: app_commands.Choice[str]):
-    if not interaction.user.guild_permissions.manage_channels:
-        return await interaction.response.send_message("❌ Requieres el permiso de **Gestionar Canales**.", ephemeral=True)
+@grupo_eliminar.command(name="canal", description="Borra por completo este canal")
+@app_commands.checks.has_permissions(manage_channels=True)
+async def borrar_canal(interaction: discord.Interaction):
+    view = ConfirmarEliminacion(accion="canal")
+    await interaction.response.send_message("⚠️ **¿Estás seguro de eliminar este canal por completo?**", view=view, ephemeral=True)
 
-    view = ConfirmarEliminacion(accion=modo.value)
-    await interaction.response.send_message(
-        f"⚠️ **¿Confirmas la acción `{modo.name}`? Esta acción no se puede deshacer.**",
-        view=view, ephemeral=True
-    )
+@grupo_eliminar.command(name="mensajes", description="Limpia los últimos 100 mensajes de este canal")
+@app_commands.checks.has_permissions(manage_messages=True)
+async def purgar_mensajes(interaction: discord.Interaction):
+    view = ConfirmarEliminacion(accion="mensajes")
+    await interaction.response.send_message("⚠️ **¿Confirmas borrar los últimos 100 mensajes?**", view=view, ephemeral=True)
+
+bot.tree.add_command(grupo_eliminar)
 
 # =====================================================================
-# ❓ 6. AYUDA Y COMANDOS TRADICIONALES
+# ❓ 6. AYUDA (/help)
 # =====================================================================
-@bot.tree.command(name="help", description="Muestra la guía completa de comandos")
+@bot.tree.command(name="help", description="Guía de uso del bot")
 async def help_command(interaction: discord.Interaction):
     embed = discord.Embed(
         title="🤖 MANUAL DE COMANDOS",
-        description="Bot configurado con IA y herramientas de administración.",
+        description="Estructura limpia con subcomandos independientes:",
         color=discord.Color.blue()
     )
-    embed.add_field(name="💬 IA & Resumen", value="`/ia` • `/resumen` • `/limpiar`", inline=False)
-    embed.add_field(name="🛠️ Gestión", value="`/gestionar` • `/eliminar`", inline=False)
-    embed.add_field(name="📁 Texto directo", value="`.canales Nombre1, Nombre2`\n`.categorias`", inline=False)
+    embed.add_field(name="💬 IA", value="`/ia` • `/limpiar mi_historial` • `/limpiar todo`", inline=False)
+    embed.add_field(name="📊 Resumen", value="`/resumen defecto` • `/resumen hoy` • `/resumen dia`\n`/resumen rango` • `/resumen mensajes` • `/resumen tiempo`", inline=False)
+    embed.add_field(name="🛠️ Gestión", value="`/gestionar canales` • `/gestionar categoria`", inline=False)
+    embed.add_field(name="🗑️ Eliminación", value="`/eliminar canal` • `/eliminar mensajes`", inline=False)
     await interaction.response.send_message(embed=embed)
-
-@bot.command()
-@commands.has_permissions(manage_channels=True)
-async def canales(ctx, *, nombres: str = None):
-    if not nombres:
-        return await ctx.send("⚠️ Uso: `.canales Nombre1, Nombre2, Nombre3`")
-    lista = [n.strip() for n in nombres.split(",") if n.strip()][:5]
-    for nom in lista:
-        await ctx.guild.create_text_channel(name=nom, category=ctx.channel.category)
-    await ctx.send(f"✅ Se crearon {len(lista)} canal(es).")
-
-@bot.command()
-@commands.has_permissions(manage_channels=True)
-async def categorias(ctx):
-    lista_cat = [f"📁 **{cat.name}** ({len(cat.channels)} canales)" for cat in ctx.guild.categories]
-    texto = "\n".join(lista_cat) if lista_cat else "No hay categorías."
-    await ctx.send(f"📋 **Categorías del servidor:**\n{texto}")
 
 # =====================================================================
 # 🚀 EJECUCIÓN
