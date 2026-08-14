@@ -1,4 +1,6 @@
 import os
+import re
+import asyncio
 import collections
 from typing import Optional
 from datetime import datetime, timezone, timedelta
@@ -30,23 +32,43 @@ async def on_ready():
     print(f"✅ Bot conectado con éxito como {bot.user}")
 
 # =====================================================================
-# 🔍 BÚSQUEDA WEB GRATUITA (DUCKDUCKGO)
+# 🔍 BÚSQUEDA WEB GRATUITA (DUCKDUCKGO ASÍNCRONA ROBUSTA)
 # =====================================================================
-def buscar_en_web(consulta: str) -> str:
-    """Realiza una búsqueda en DuckDuckGo y devuelve los titulares más recientes."""
+def _ejecutar_busqueda_ddg(consulta: str) -> str:
+    """Función síncrona interna para consultar DuckDuckGo."""
     try:
+        results = []
         with DDGS() as ddgs:
-            resultados = list(ddgs.text(consulta, max_results=3))
-            if not resultados:
-                return "No se encontraron resultados recientes en la web."
-            
-            texto_busqueda = ""
-            for i, res in enumerate(resultados, 1):
-                texto_busqueda += f"Fuente {i}: {res.get('title', '')}\n{res.get('body', '')}\n\n"
-            return texto_busqueda
+            # Intenta primero con región global / wt-wt
+            resp = ddgs.text(consulta, region="wt-wt", max_results=4)
+            if resp:
+                results = list(resp)
+        
+        # Fallback sin región especificada si no trajo resultados
+        if not results:
+            with DDGS() as ddgs:
+                resp = ddgs.text(consulta, max_results=4)
+                if resp:
+                    results = list(resp)
+
+        if not results:
+            return "No se encontraron resultados en la web."
+
+        texto_busqueda = ""
+        for i, res in enumerate(results, 1):
+            titulo = res.get('title', '')
+            cuerpo = res.get('body', '')
+            texto_busqueda += f"Fuente {i}: {titulo}\n{cuerpo}\n\n"
+        return texto_busqueda
+        
     except Exception as e:
-        print(f"Error en búsqueda web: {e}")
+        print(f"❌ Error en DuckDuckGo: {e}")
         return "No se pudo realizar la búsqueda web en este momento."
+
+async def buscar_en_web(consulta: str) -> str:
+    """Ejecuta la búsqueda web en un hilo secundario para no bloquear el bucle de eventos."""
+    loop = asyncio.get_event_loop()
+    return await loop.run_in_executor(None, _ejecutar_busqueda_ddg, consulta)
 
 # =====================================================================
 # 🤖 CONSULTA A GROQ (LLAMA 3.3)
@@ -123,8 +145,8 @@ def parsear_fecha(txt: str) -> Optional[datetime]:
 async def ia(interaction: discord.Interaction, mensaje: str):
     await interaction.response.defer()
     
-    # 1. Busca información fresca en DuckDuckGo
-    info_web = buscar_en_web(mensaje)
+    # 1. Busca información fresca en DuckDuckGo usando await
+    info_web = await buscar_en_web(mensaje)
     
     # 2. Prepara la consulta para la IA
     prompt_con_web = (
@@ -414,5 +436,5 @@ if __name__ == "__main__":
     if not TOKEN:
         print("❌ ERROR: Falta la variable DISCORD_TOKEN.")
     else:
-        keep_alive()  # <-- Levanta el servidor Flask para que Render enlace el puerto
+        keep_alive()  # <-- Levanta el servidor Flask para Render
         bot.run(TOKEN)
