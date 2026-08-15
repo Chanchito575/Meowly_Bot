@@ -9,10 +9,9 @@ from datetime import datetime, timezone, timedelta
 import discord
 from discord import app_commands
 from discord.ext import commands
-import aiohttp
-from groq import Groq
 from duckduckgo_search import DDGS
 from keep_alive import keep_alive  # Servidor web Flask para Render
+import openai # OpenRouter usa la librería de OpenAI
 
 # =====================================================================
 # ⚙️ CONFIGURACIÓN DEL BOT Y CLIENTES
@@ -45,12 +44,16 @@ class HistorialIA:
 
 memoria_ia = collections.defaultdict(HistorialIA)
 
-groq_client = Groq(api_key=os.getenv("GROQ_API_KEY"))
+# Cliente de OpenRouter
+openrouter_client = openai.AsyncOpenAI(
+    base_url="https://openrouter.ai/api/v1",
+    api_key=os.getenv("OPENROUTER_API_KEY"),
+)
 
-# Modelos del Ensamble
-MODELO_LLAMA = "llama-3.1-8b-instant"
-MODELO_GEMMA = "llama-3.3-70b-versatile"
-MODELO_MIXTRAL = "mixtral-8x7b-32768"
+# Nuevos Modelos Gratuitos del Ensamble
+MODELO_QWEN = "qwen/qwen-2.5-coder-32b-instruct:free"   # Lógica, código y fuentes
+MODELO_MISTRAL = "mistralai/mistral-small-24b-instruct-2501:free" # Fluidez y resúmenes
+MODELO_JUEZ = "meta-llama/llama-3.3-70b-instruct:free"   # Juez para combinar respuestas
 
 @bot.event
 async def on_ready():
@@ -89,7 +92,6 @@ def aplicar_mapeo(texto: str, mapeo: dict) -> str:
 # 🔍 BÚSQUEDA WEB CONDICIONAL
 # =====================================================================
 def necesita_busqueda(mensaje: str) -> bool:
-    """Heurística para decidir si vale la pena buscar en la web."""
     palabras_clave = [
         r"\bnoticia", r"\bhoy\b", r"\bactual", r"quién\b", r"qué es\b", 
         r"cuánto\b", r"\bprecio", r"\bclima", r"\bresultado", r"\binvestiga\b", 
@@ -118,11 +120,9 @@ async def buscar_en_web(consulta: str) -> str:
     return await loop.run_in_executor(None, _ejecutar_busqueda_ddg, consulta)
 
 # =====================================================================
-# 🧠 ENSAMBLE DE IAS
+# 🧠 ENSAMBLE DE IAS (OpenRouter)
 # =====================================================================
-async def consultar_groq_ensamble(prompt_o_mensajes, es_resumen=False, info_web="") -> str:
-    loop = asyncio.get_event_loop()
-
+async def consultar_ensamble(prompt_o_mensajes, es_resumen=False, info_web="") -> str:
     if es_resumen:
         system_prompt = (
             "Eres Carek, un asistente analítico. Resume la conversación desglosando "
@@ -132,12 +132,11 @@ async def consultar_groq_ensamble(prompt_o_mensajes, es_resumen=False, info_web=
             {"role": "system", "content": system_prompt},
             {"role": "user", "content": f"Resume lo siguiente:\n\n{prompt_o_mensajes}"}
         ]
-        comp = await loop.run_in_executor(
-            None, lambda: groq_client.chat.completions.create(
-                model=MODELO_MIXTRAL, messages=messages, temperature=0.5, max_tokens=1024
-            )
+        # Mistral Small es excelente para resúmenes
+        resp = await openrouter_client.chat.completions.create(
+            model=MODELO_MISTRAL, messages=messages, temperature=0.5, max_tokens=1024
         )
-        return comp.choices[0].message.content
+        return resp.choices[0].message.content
 
     base_messages = [{"role": "system", "content": "Eres Carek, un asistente amigable, moderno y carismático para Discord."}]
     if info_web:
@@ -146,29 +145,24 @@ async def consultar_groq_ensamble(prompt_o_mensajes, es_resumen=False, info_web=
     messages = base_messages + list(prompt_o_mensajes)
 
     try:
-        tarea_gemma = loop.run_in_executor(
-            None, lambda: groq_client.chat.completions.create(
-                model=MODELO_GEMMA, messages=messages, temperature=0.5, max_tokens=600
-            )
+        # Tareas en paralelo de forma asíncrona nativa
+        tarea_qwen = openrouter_client.chat.completions.create(
+            model=MODELO_QWEN, messages=messages, temperature=0.5, max_tokens=600
         )
-        tarea_mixtral = loop.run_in_executor(
-            None, lambda: groq_client.chat.completions.create(
-                model=MODELO_MIXTRAL, messages=messages, temperature=0.7, max_tokens=600
-            )
+        tarea_mistral = openrouter_client.chat.completions.create(
+            model=MODELO_MISTRAL, messages=messages, temperature=0.7, max_tokens=600
         )
 
-        resp_gemma, resp_mixtral = await asyncio.gather(tarea_gemma, tarea_mixtral)
-        texto_gemma = resp_gemma.choices[0].message.content
-        texto_mixtral = resp_mixtral.choices[0].message.content
+        resp_qwen, resp_mistral = await asyncio.gather(tarea_qwen, tarea_mistral)
+        texto_qwen = resp_qwen.choices[0].message.content
+        texto_mistral = resp_mistral.choices[0].message.content
 
         prompt_juez = [
             {"role": "system", "content": "Eres Carek. Combina los datos exactos y lógica de la Opción A con la fluidez de la Opción B. Usa Markdown."},
-            {"role": "user", "content": f"Opción A:\n{texto_gemma}\n\nOpción B:\n{texto_mixtral}\n\nGenera la respuesta final ideal:"}
+            {"role": "user", "content": f"Opción A:\n{texto_qwen}\n\nOpción B:\n{texto_mistral}\n\nGenera la respuesta final ideal:"}
         ]
-        resp_final = await loop.run_in_executor(
-            None, lambda: groq_client.chat.completions.create(
-                model=MODELO_LLAMA, messages=prompt_juez, temperature=0.7, max_tokens=1000
-            )
+        resp_final = await openrouter_client.chat.completions.create(
+            model=MODELO_JUEZ, messages=prompt_juez, temperature=0.7, max_tokens=1000
         )
         return resp_final.choices[0].message.content
     except Exception as e:
@@ -180,13 +174,19 @@ async def ia_extraer_mapeo_fuente(ejemplo_texto: str) -> dict:
         "un JSON con el mapeo del abecedario. Responde ÚNICAMENTE el JSON.\n"
         'Estructura: {"a": "...", "A": "..."}'
     )
-    loop = asyncio.get_event_loop()
-    completion = await loop.run_in_executor(
-        None, lambda: groq_client.chat.completions.create(
-            model=MODELO_GEMMA, messages=[{"role": "user", "content": prompt}], temperature=0.1
-        )
+    # Qwen es mejor para asegurar el formato JSON
+    completion = await openrouter_client.chat.completions.create(
+        model=MODELO_QWEN, messages=[{"role": "user", "content": prompt}], temperature=0.1
     )
-    return json.loads(completion.choices[0].message.content.strip())
+    
+    # Extraer json en caso de que responda con bloques de código
+    contenido = completion.choices[0].message.content.strip()
+    if contenido.startswith("```json"):
+        contenido = contenido.split("```json")[1].split("```")[0].strip()
+    elif contenido.startswith("```"):
+        contenido = contenido.split("```")[1].split("```")[0].strip()
+        
+    return json.loads(contenido)
 
 # =====================================================================
 # 💬 1. COMANDO /IA
@@ -197,18 +197,16 @@ async def ia(interaction: discord.Interaction, mensaje: str):
     await interaction.response.defer()
     
     info_web = ""
-    # Búsqueda web condicional (ahorra recursos y latencia)
     if necesita_busqueda(mensaje):
         info_web = await buscar_en_web(mensaje)
         
     usuario_id = interaction.user.id
     historial = memoria_ia[usuario_id]
     
-    # Agregar mensaje del usuario y obtener contexto actualizado (expira a los 45 min)
     historial.agregar("user", mensaje)
     contexto = historial.actualizar_y_obtener()
     
-    respuesta = await consultar_groq_ensamble(contexto, es_resumen=False, info_web=info_web)
+    respuesta = await consultar_ensamble(contexto, es_resumen=False, info_web=info_web)
     
     if not respuesta.startswith("❌"):
         historial.agregar("assistant", respuesta)
@@ -242,7 +240,7 @@ async def escanear_fuente(interaction: discord.Interaction, nombre_guardar: str)
                 guardar_fuente(inter.guild_id, nombre_guardar, mapeo)
                 await inter.followup.send(f"🧠 Se analizó {canal.mention} y se guardó la fuente **{nombre_guardar}**.")
             except Exception as e:
-                await inter.followup.send(f"❌ Error: {e}")
+                await inter.followup.send(f"❌ Error al procesar JSON: {e}")
 
     await interaction.response.send_message("📋 **Selecciona el canal para escanear:**", view=SelectCanalView(), ephemeral=True)
 
@@ -337,7 +335,7 @@ async def obtener_resumen(interaction: discord.Interaction, titulo: str, limit: 
     palabras = texto_completo.split()
     if len(palabras) > 2000: texto_completo = " ".join(palabras[:2000])
 
-    resumen_txt = await consultar_groq_ensamble(texto_completo, es_resumen=True)
+    resumen_txt = await consultar_ensamble(texto_completo, es_resumen=True)
     resultado = f"📊 **{titulo}**\n\n{resumen_txt}"
     await interaction.followup.send(resultado[:1990] + "..." if len(resultado) > 2000 else resultado)
 
@@ -434,7 +432,7 @@ class ConfirmarBorradoCanales(discord.ui.View):
                 await c.delete()
                 eliminados += 1
             except: pass
-        if interaction.channel in self.canales: return # Si el canal actual fue borrado, no seguimos respondiendo
+        if interaction.channel in self.canales: return
         await interaction.followup.send(f"✅ Se eliminaron {eliminados} canales.", ephemeral=True)
 
     @discord.ui.button(label="⚪ Cancelar", style=discord.ButtonStyle.secondary)
