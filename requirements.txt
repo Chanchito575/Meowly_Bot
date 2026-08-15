@@ -1,5 +1,5 @@
 discord.py
-groq
+openai
+duckduckgo_search
 Flask
 aiohttp
-duckduckgo_search
