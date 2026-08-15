@@ -49,7 +49,7 @@ groq_client = Groq(api_key=os.getenv("GROQ_API_KEY"))
 
 # Modelos del Ensamble
 MODELO_LLAMA = "llama-3.1-8b-instant"
-MODELO_GEMMA = "gemma2-9b-it"
+MODELO_GEMMA = "llama-3.3-70b-versatile"
 MODELO_MIXTRAL = "mixtral-8x7b-32768"
 
 @bot.event
