@@ -1,168 +1,217 @@
 import os
-import re
+import json
 import asyncio
 import collections
-from typing import Optional
+import re
+from typing import Optional, List
 from datetime import datetime, timezone, timedelta
 
 import discord
 from discord import app_commands
 from discord.ext import commands
 import aiohttp
+from groq import Groq
 from duckduckgo_search import DDGS
-from keep_alive import keep_alive  # <--- Servidor web Flask para Render
+from keep_alive import keep_alive  # Servidor web Flask para Render
 
 # =====================================================================
-# ⚙️ CONFIGURACIÓN DEL BOT
+# ⚙️ CONFIGURACIÓN DEL BOT Y CLIENTES
 # =====================================================================
 intents = discord.Intents.default()
 intents.message_content = True
 intents.guilds = True
 
 bot = commands.Bot(command_prefix=".", intents=intents, help_command=None)
-memoria_ia = collections.defaultdict(lambda: collections.deque(maxlen=20))
 
-MODELO_IA = "llama-3.3-70b-versatile"
+# Memoria inteligente: 20 mensajes de tope y caducidad tras 45 mins de inactividad
+class HistorialIA:
+    def __init__(self):
+        self.mensajes = collections.deque(maxlen=20)
+        self.ultimo_uso = datetime.now(timezone.utc)
+
+    def actualizar_y_obtener(self):
+        ahora = datetime.now(timezone.utc)
+        if (ahora - self.ultimo_uso) > timedelta(minutes=45):
+            self.mensajes.clear()
+        self.ultimo_uso = ahora
+        return list(self.mensajes)
+
+    def agregar(self, rol, contenido):
+        self.mensajes.append({"role": rol, "content": contenido})
+        self.ultimo_uso = datetime.now(timezone.utc)
+
+    def limpiar(self):
+        self.mensajes.clear()
+
+memoria_ia = collections.defaultdict(HistorialIA)
+
+groq_client = Groq(api_key=os.getenv("GROQ_API_KEY"))
+
+# Modelos del Ensamble
+MODELO_LLAMA = "llama-3.1-8b-instant"
+MODELO_GEMMA = "gemma2-9b-it"
+MODELO_MIXTRAL = "mixtral-8x7b-32768"
 
 @bot.event
 async def on_ready():
     await bot.tree.sync()
-    actividad = discord.Game(name="creado por Chanchito575")
+    actividad = discord.Game(name="creado por Chanchito575 | /help")
     await bot.change_presence(status=discord.Status.online, activity=actividad)
     print(f"✅ Bot conectado con éxito como {bot.user}")
 
 # =====================================================================
-# 🔍 BÚSQUEDA WEB GRATUITA (DUCKDUCKGO ASÍNCRONA ROBUSTA)
+# 📁 SISTEMA DE FUENTES
 # =====================================================================
+def cargar_fuentes(guild_id: int) -> dict:
+    archivo = f"fuentes_{guild_id}.json"
+    if not os.path.exists(archivo): return {}
+    with open(archivo, "r", encoding="utf-8") as f: return json.load(f)
+
+def guardar_fuente(guild_id: int, nombre: str, mapeo: dict):
+    data = cargar_fuentes(guild_id)
+    data[nombre.lower()] = mapeo
+    with open(f"fuentes_{guild_id}.json", "w", encoding="utf-8") as f:
+        json.dump(data, f, indent=4)
+
+def eliminar_fuente(guild_id: int, nombre: str) -> bool:
+    data = cargar_fuentes(guild_id)
+    if nombre.lower() in data:
+        del data[nombre.lower()]
+        with open(f"fuentes_{guild_id}.json", "w", encoding="utf-8") as f:
+            json.dump(data, f, indent=4)
+        return True
+    return False
+
+def aplicar_mapeo(texto: str, mapeo: dict) -> str:
+    return "".join(mapeo.get(c, c) for c in texto)
+
+# =====================================================================
+# 🔍 BÚSQUEDA WEB CONDICIONAL
+# =====================================================================
+def necesita_busqueda(mensaje: str) -> bool:
+    """Heurística para decidir si vale la pena buscar en la web."""
+    palabras_clave = [
+        r"\bnoticia", r"\bhoy\b", r"\bactual", r"quién\b", r"qué es\b", 
+        r"cuánto\b", r"\bprecio", r"\bclima", r"\bresultado", r"\binvestiga\b", 
+        r"\b2024\b", r"\b2025\b", r"\b2026\b"
+    ]
+    msg_lower = mensaje.lower()
+    return any(re.search(p, msg_lower) for p in palabras_clave)
+
 def _ejecutar_busqueda_ddg(consulta: str) -> str:
-    """Función síncrona interna para consultar DuckDuckGo."""
     try:
         results = []
         with DDGS() as ddgs:
-            # Intenta primero con región global / wt-wt
-            resp = ddgs.text(consulta, region="wt-wt", max_results=4)
-            if resp:
-                results = list(resp)
-        
-        # Fallback sin región especificada si no trajo resultados
-        if not results:
-            with DDGS() as ddgs:
-                resp = ddgs.text(consulta, max_results=4)
-                if resp:
-                    results = list(resp)
-
-        if not results:
-            return "No se encontraron resultados en la web."
+            resp = ddgs.text(consulta, region="wt-wt", max_results=3)
+            if resp: results = list(resp)
+        if not results: return "No se encontraron resultados en la web."
 
         texto_busqueda = ""
         for i, res in enumerate(results, 1):
-            titulo = res.get('title', '')
-            cuerpo = res.get('body', '')
-            texto_busqueda += f"Fuente {i}: {titulo}\n{cuerpo}\n\n"
+            texto_busqueda += f"Fuente {i}: {res.get('title', '')}\n{res.get('body', '')}\n\n"
         return texto_busqueda
-        
     except Exception as e:
-        print(f"❌ Error en DuckDuckGo: {e}")
         return "No se pudo realizar la búsqueda web en este momento."
 
 async def buscar_en_web(consulta: str) -> str:
-    """Ejecuta la búsqueda web en un hilo secundario para no bloquear el bucle de eventos."""
     loop = asyncio.get_event_loop()
     return await loop.run_in_executor(None, _ejecutar_busqueda_ddg, consulta)
 
 # =====================================================================
-# 🤖 CONSULTA A GROQ (LLAMA 3.3)
+# 🧠 ENSAMBLE DE IAS
 # =====================================================================
-async def consultar_groq(prompt_o_mensajes, es_resumen=False):
-    groq_api_key = os.getenv("GROQ_API_KEY")
-    if not groq_api_key:
-        return "❌ Error: La variable `GROQ_API_KEY` no está configurada en Render."
-
-    url = "https://api.groq.com/openai/v1/chat/completions"
-    headers = {
-        "Authorization": f"Bearer {groq_api_key}",
-        "Content-Type": "application/json"
-    }
+async def consultar_groq_ensamble(prompt_o_mensajes, es_resumen=False, info_web="") -> str:
+    loop = asyncio.get_event_loop()
 
     if es_resumen:
-        payload_messages = [
-            {
-                "role": "system",
-                "content": (
-                    "Eres Carek, un asistente de Discord analítico y claro. "
-                    "Resumes conversaciones estructurando las ideas en listas ordenadas con viñetas."
-                )
-            },
-            {"role": "user", "content": f"Por favor resume las siguientes conversaciones del chat:\n\n{prompt_o_mensajes}"}
+        system_prompt = (
+            "Eres Carek, un asistente analítico. Resume la conversación desglosando "
+            "los puntos clave exactos. Usa un formato claro con viñetas y emojis."
+        )
+        messages = [
+            {"role": "system", "content": system_prompt},
+            {"role": "user", "content": f"Resume lo siguiente:\n\n{prompt_o_mensajes}"}
         ]
-    else:
-        payload_messages = [
-            {
-                "role": "system",
-                "content": "Eres Carek, un asistente virtual útil, fluido y moderno para comunidades de Discord."
-            }
-        ] + list(prompt_o_mensajes)
+        comp = await loop.run_in_executor(
+            None, lambda: groq_client.chat.completions.create(
+                model=MODELO_MIXTRAL, messages=messages, temperature=0.5, max_tokens=1024
+            )
+        )
+        return comp.choices[0].message.content
 
-    payload = {
-        "model": MODELO_IA,
-        "messages": payload_messages,
-        "temperature": 0.7,
-        "max_tokens": 1024
-    }
+    base_messages = [{"role": "system", "content": "Eres Carek, un asistente amigable, moderno y carismático para Discord."}]
+    if info_web:
+        base_messages.append({"role": "user", "content": f"Información web reciente para usar de contexto si es necesario:\n{info_web}\n\n"})
+    
+    messages = base_messages + list(prompt_o_mensajes)
 
     try:
-        async with aiohttp.ClientSession() as session:
-            async with session.post(url, json=payload, headers=headers) as resp:
-                if resp.status == 200:
-                    data = await resp.json()
-                    return data["choices"][0]["message"]["content"]
-                else:
-                    return f"❌ Error API Groq (Status {resp.status})"
+        tarea_gemma = loop.run_in_executor(
+            None, lambda: groq_client.chat.completions.create(
+                model=MODELO_GEMMA, messages=messages, temperature=0.5, max_tokens=600
+            )
+        )
+        tarea_mixtral = loop.run_in_executor(
+            None, lambda: groq_client.chat.completions.create(
+                model=MODELO_MIXTRAL, messages=messages, temperature=0.7, max_tokens=600
+            )
+        )
+
+        resp_gemma, resp_mixtral = await asyncio.gather(tarea_gemma, tarea_mixtral)
+        texto_gemma = resp_gemma.choices[0].message.content
+        texto_mixtral = resp_mixtral.choices[0].message.content
+
+        prompt_juez = [
+            {"role": "system", "content": "Eres Carek. Combina los datos exactos y lógica de la Opción A con la fluidez de la Opción B. Usa Markdown."},
+            {"role": "user", "content": f"Opción A:\n{texto_gemma}\n\nOpción B:\n{texto_mixtral}\n\nGenera la respuesta final ideal:"}
+        ]
+        resp_final = await loop.run_in_executor(
+            None, lambda: groq_client.chat.completions.create(
+                model=MODELO_LLAMA, messages=prompt_juez, temperature=0.7, max_tokens=1000
+            )
+        )
+        return resp_final.choices[0].message.content
     except Exception as e:
-        return f"❌ Error de conexión: {e}"
+        return f"❌ Error en la consulta IA: {e}"
 
-def parsear_fecha(txt: str) -> Optional[datetime]:
-    txt = txt.strip()
-    partes = txt.split("/")
-    anio_actual = datetime.now(timezone.utc).year
-    try:
-        if len(partes) == 2:
-            d, m = int(partes[0]), int(partes[1])
-            return datetime(anio_actual, m, d, tzinfo=timezone.utc)
-        elif len(partes) == 3:
-            d, m, a = int(partes[0]), int(partes[1]), int(partes[2])
-            if a < 100: a += 2000
-            return datetime(a, m, d, tzinfo=timezone.utc)
-    except ValueError:
-        return None
-    return None
+async def ia_extraer_mapeo_fuente(ejemplo_texto: str) -> dict:
+    prompt = (
+        f"Analiza la tipografía: '{ejemplo_texto}'. Extrae las letras especiales y genera "
+        "un JSON con el mapeo del abecedario. Responde ÚNICAMENTE el JSON.\n"
+        'Estructura: {"a": "...", "A": "..."}'
+    )
+    loop = asyncio.get_event_loop()
+    completion = await loop.run_in_executor(
+        None, lambda: groq_client.chat.completions.create(
+            model=MODELO_GEMMA, messages=[{"role": "user", "content": prompt}], temperature=0.1
+        )
+    )
+    return json.loads(completion.choices[0].message.content.strip())
 
 # =====================================================================
-# 💬 1. INTELIGENCIA ARTIFICIAL CON BÚSQUEDA WEB (/ia)
+# 💬 1. COMANDO /IA
 # =====================================================================
-@bot.tree.command(name="ia", description="Habla con la IA (con acceso a información en tiempo real)")
+@bot.tree.command(name="ia", description="Habla con Carek (Ensamble de IAs)")
 @app_commands.describe(mensaje="Tu pregunta o consulta")
 async def ia(interaction: discord.Interaction, mensaje: str):
     await interaction.response.defer()
     
-    # 1. Busca información fresca en DuckDuckGo usando await
-    info_web = await buscar_en_web(mensaje)
-    
-    # 2. Prepara la consulta para la IA
-    prompt_con_web = (
-        f"Información obtenida de la web en tiempo real:\n{info_web}\n\n"
-        f"Pregunta del usuario: {mensaje}\n\n"
-        "Responde a la pregunta del usuario utilizando la información de la web si es relevante."
-    )
-    
+    info_web = ""
+    # Búsqueda web condicional (ahorra recursos y latencia)
+    if necesita_busqueda(mensaje):
+        info_web = await buscar_en_web(mensaje)
+        
     usuario_id = interaction.user.id
-    memoria_ia[usuario_id].append({"role": "user", "content": prompt_con_web})
+    historial = memoria_ia[usuario_id]
     
-    # 3. Llama a Groq
-    respuesta = await consultar_groq(memoria_ia[usuario_id], es_resumen=False)
+    # Agregar mensaje del usuario y obtener contexto actualizado (expira a los 45 min)
+    historial.agregar("user", mensaje)
+    contexto = historial.actualizar_y_obtener()
+    
+    respuesta = await consultar_groq_ensamble(contexto, es_resumen=False, info_web=info_web)
     
     if not respuesta.startswith("❌"):
-        memoria_ia[usuario_id].append({"role": "assistant", "content": respuesta})
+        historial.agregar("assistant", respuesta)
     
     if len(respuesta) > 2000:
         respuesta = respuesta[:1990] + "..."
@@ -170,216 +219,267 @@ async def ia(interaction: discord.Interaction, mensaje: str):
     await interaction.followup.send(f"🤖 {respuesta}")
 
 # =====================================================================
-# 🧹 2. LIMPIAR MEMORIA (/limpiar)
+# 🎨 2. GESTIÓN DE TIPOGRAFÍAS (/fuente)
+# =====================================================================
+grupo_fuente = app_commands.Group(name="fuente", description="Gestión de tipografías")
+
+@grupo_fuente.command(name="escanear")
+@app_commands.checks.has_permissions(manage_channels=True)
+async def escanear_fuente(interaction: discord.Interaction, nombre_guardar: str):
+    canales_texto = [c for c in interaction.guild.channels if isinstance(c, discord.TextChannel)]
+    class SelectCanalView(discord.ui.View):
+        def __init__(self):
+            super().__init__(timeout=60)
+            self.select = discord.ui.Select(options=[discord.SelectOption(label=f"#{c.name}", value=str(c.id)) for c in canales_texto[:25]])
+            self.select.callback = self.callback
+            self.add_item(self.select)
+
+        async def callback(self, inter: discord.Interaction):
+            await inter.response.defer(ephemeral=True)
+            canal = inter.guild.get_channel(int(self.select.values[0]))
+            try:
+                mapeo = await ia_extraer_mapeo_fuente(canal.name)
+                guardar_fuente(inter.guild_id, nombre_guardar, mapeo)
+                await inter.followup.send(f"🧠 Se analizó {canal.mention} y se guardó la fuente **{nombre_guardar}**.")
+            except Exception as e:
+                await inter.followup.send(f"❌ Error: {e}")
+
+    await interaction.response.send_message("📋 **Selecciona el canal para escanear:**", view=SelectCanalView(), ephemeral=True)
+
+@grupo_fuente.command(name="aplicar")
+@app_commands.checks.has_permissions(manage_channels=True)
+async def aplicar_fuente_cmd(interaction: discord.Interaction, canal: discord.TextChannel, estilo: str, emoji: str = "💬"):
+    await interaction.response.defer(ephemeral=True)
+    fuentes = cargar_fuentes(interaction.guild_id)
+    if estilo.lower() not in fuentes:
+        return await interaction.followup.send(f"❌ Fuente **{estilo}** no encontrada.")
+    nombre_limpio = canal.name.split("｜")[-1].replace("-", " ").strip()
+    nuevo_nombre = f"{emoji}｜{aplicar_mapeo(nombre_limpio, fuentes[estilo.lower()])}".replace(" ", "-")
+    await canal.edit(name=nuevo_nombre)
+    await interaction.followup.send(f"🎨 Canal rediseñado: {canal.mention}")
+
+@grupo_fuente.command(name="listar")
+async def listar_fuentes(interaction: discord.Interaction):
+    fuentes = cargar_fuentes(interaction.guild_id)
+    if not fuentes: return await interaction.response.send_message("📂 No hay tipografías guardadas.", ephemeral=True)
+    embed = discord.Embed(title="🎨 Tipografías", color=discord.Color.blue())
+    for nombre, mapeo in fuentes.items():
+        embed.add_field(name=f"📌 {nombre.capitalize()}", value=f"`{aplicar_mapeo('Ejemplo', mapeo)}`", inline=False)
+    await interaction.response.send_message(embed=embed, ephemeral=True)
+
+@grupo_fuente.command(name="probar")
+async def probar_fuente(interaction: discord.Interaction, texto: str, estilo: str, emoji: str = "💬"):
+    fuentes = cargar_fuentes(interaction.guild_id)
+    if estilo.lower() not in fuentes: return await interaction.response.send_message(f"❌ Fuente inexistente.", ephemeral=True)
+    resultado = f"{emoji}｜{aplicar_mapeo(texto, fuentes[estilo.lower()])}".replace(" ", "-")
+    await interaction.response.send_message(f"👁️ **Vista Previa:** `{resultado}`", ephemeral=True)
+
+@grupo_fuente.command(name="eliminar")
+@app_commands.checks.has_permissions(manage_channels=True)
+async def eliminar_fuente_cmd(interaction: discord.Interaction, nombre: str):
+    if eliminar_fuente(interaction.guild_id, nombre):
+        await interaction.response.send_message(f"🗑️ Tipografía **{nombre}** eliminada.", ephemeral=True)
+    else:
+        await interaction.response.send_message(f"❌ No se encontró **{nombre}**.", ephemeral=True)
+
+bot.tree.add_command(grupo_fuente)
+
+# =====================================================================
+# 🧹 3. LIMPIAR MEMORIA (/limpiar)
 # =====================================================================
 grupo_limpiar = app_commands.Group(name="limpiar", description="Borra la memoria del bot")
 
-@grupo_limpiar.command(name="mi_historial", description="Borra únicamente tu historial con la IA")
+@grupo_limpiar.command(name="mi_historial")
 async def limpiar_mi_historial(interaction: discord.Interaction):
-    memoria_ia[interaction.user.id].clear()
-    await interaction.response.send_message("🧹 Tu historial ha sido borrado.", ephemeral=True)
+    memoria_ia[interaction.user.id].limpiar()
+    await interaction.response.send_message("🧹 Tu historial de IA ha sido borrado y reiniciado.", ephemeral=True)
 
-@grupo_limpiar.command(name="todo", description="Borra la memoria global de todos (Admins)")
-@app_commands.default_permissions(administrator=True)
+@grupo_limpiar.command(name="todo")
 @app_commands.checks.has_permissions(administrator=True)
 async def limpiar_todo(interaction: discord.Interaction):
     memoria_ia.clear()
-    await interaction.response.send_message("🧹 Memoria global de la IA reiniciada.")
+    await interaction.response.send_message("🧹 Memoria global de la IA reiniciada para todos los usuarios.")
 
 bot.tree.add_command(grupo_limpiar)
 
 # =====================================================================
-# 📊 3. RESUMEN (/resumen)
+# 📊 4. RESÚMENES DE CHAT (/resumen)
 # =====================================================================
 grupo_resumen = app_commands.Group(name="resumen", description="Resúmenes inteligentes del chat")
 
-async def obtener_resumen_de_rango(channel, after_dt, before_dt) -> Optional[str]:
+def parsear_fecha(txt: str) -> Optional[datetime]:
+    partes = txt.strip().split("/")
+    anio_actual = datetime.now(timezone.utc).year
+    try:
+        if len(partes) == 2: return datetime(anio_actual, int(partes[1]), int(partes[0]), tzinfo=timezone.utc)
+        elif len(partes) == 3:
+            a = int(partes[2])
+            if a < 100: a += 2000
+            return datetime(a, int(partes[1]), int(partes[0]), tzinfo=timezone.utc)
+    except: return None
+    return None
+
+async def obtener_resumen(interaction: discord.Interaction, titulo: str, limit: int = 1000, after=None, before=None, autor=None):
+    await interaction.response.defer()
     mensajes_texto = []
-    async for msg in channel.history(limit=500, after=after_dt, before=before_dt, oldest_first=True):
-        if not msg.author.bot and msg.content.strip():
-            mensajes_texto.append(f"{msg.author.display_name}: {msg.content}")
+    
+    async for msg in interaction.channel.history(limit=limit, after=after, before=before, oldest_first=True):
+        if msg.author.bot or not msg.content.strip(): continue
+        if autor and msg.author != autor: continue
+        
+        fecha_str = msg.created_at.strftime("%d/%m")
+        mensajes_texto.append(f"[{fecha_str}] {msg.author.display_name}: {msg.content}")
 
     if not mensajes_texto:
-        return None
+        return await interaction.followup.send(f"📌 **{titulo}**\n*Sin actividad o mensajes registrados que coincidan.*")
 
     texto_completo = "\n".join(mensajes_texto)
     palabras = texto_completo.split()
+    if len(palabras) > 2000: texto_completo = " ".join(palabras[:2000])
 
-    if len(palabras) > 2000:
-        texto_recortado = " ".join(palabras[:2000])
-    else:
-        texto_recortado = texto_completo
+    resumen_txt = await consultar_groq_ensamble(texto_completo, es_resumen=True)
+    resultado = f"📊 **{titulo}**\n\n{resumen_txt}"
+    await interaction.followup.send(resultado[:1990] + "..." if len(resultado) > 2000 else resultado)
 
-    return await consultar_groq(texto_recortado, es_resumen=True)
+@grupo_resumen.command(name="defecto")
+async def res_defecto(interaction: discord.Interaction):
+    await obtener_resumen(interaction, "Resumen (Últimos 100 mensajes)", limit=100)
 
-async def procesar_resumen_unificado(interaction: discord.Interaction, titulo: str, limite: int = 200, after_dt=None, before_dt=None):
-    await interaction.response.defer()
-    resumen_txt = await obtener_resumen_de_rango(interaction.channel, after_dt, before_dt)
-    
-    if not resumen_txt:
-        return await interaction.followup.send(f"📌 **{titulo}**\n*Sin actividad/mensajes registrados.*")
+@grupo_resumen.command(name="hoy")
+async def res_hoy(interaction: discord.Interaction):
+    inicio_hoy = datetime.now(timezone.utc).replace(hour=0, minute=0, second=0)
+    await obtener_resumen(interaction, "Resumen de Hoy", after=inicio_hoy)
 
-    resultado = f"📌 **{titulo}**\n{resumen_txt}"
-    if len(resultado) > 2000:
-        resultado = resultado[:1990] + "..."
-    await interaction.followup.send(resultado)
+@grupo_resumen.command(name="dia")
+async def res_dia(interaction: discord.Interaction, fecha: str):
+    dt = parsear_fecha(fecha)
+    if not dt: return await interaction.response.send_message("❌ Fecha inválida. Usa `DD/MM`.", ephemeral=True)
+    dt_fin = dt.replace(hour=23, minute=59, second=59)
+    await obtener_resumen(interaction, f"Resumen del Día ({fecha})", after=dt, before=dt_fin)
 
-@grupo_resumen.command(name="defecto", description="Resumen de los últimos 100 mensajes")
-async def resumen_defecto(interaction: discord.Interaction):
-    await procesar_resumen_unificado(interaction, titulo="Resumen de los últimos 100 mensajes", limite=100)
+@grupo_resumen.command(name="rango")
+async def res_rango(interaction: discord.Interaction, fecha_inicio: str, fecha_fin: str):
+    dt_ini = parsear_fecha(fecha_inicio)
+    dt_fin = parsear_fecha(fecha_fin)
+    if not dt_ini or not dt_fin: return await interaction.response.send_message("❌ Formato inválido.", ephemeral=True)
+    dt_fin = dt_fin.replace(hour=23, minute=59, second=59)
+    await obtener_resumen(interaction, f"Resumen entre {fecha_inicio} y {fecha_fin}", after=dt_ini, before=dt_fin)
 
-@grupo_resumen.command(name="hoy", description="Resumen de los mensajes de hoy")
-async def resumen_hoy(interaction: discord.Interaction):
-    ahora = datetime.now(timezone.utc)
-    inicio_hoy = ahora.replace(hour=0, minute=0, second=0, microsecond=0)
-    fecha_hoy = ahora.strftime("%d/%m")
-    await procesar_resumen_unificado(interaction, titulo=f"Resumen de hoy ({fecha_hoy})", after_dt=inicio_hoy)
+@grupo_resumen.command(name="mensajes")
+async def res_mensajes(interaction: discord.Interaction, cantidad: int):
+    if cantidad < 1 or cantidad > 1000: return await interaction.response.send_message("❌ La cantidad debe estar entre 1 y 1000.", ephemeral=True)
+    await obtener_resumen(interaction, f"Resumen de {cantidad} mensajes", limit=cantidad)
 
-@grupo_resumen.command(name="dia", description="Resumen de un día específico")
-@app_commands.describe(fecha="DD/MM o DD/MM/AAAA")
-async def resumen_dia(interaction: discord.Interaction, fecha: str):
-    f_inicio = parsear_fecha(fecha)
-    if not f_inicio:
-        return await interaction.response.send_message("❌ Fecha inválida. Usa `DD/MM`.", ephemeral=True)
-    f_fin = f_inicio + timedelta(days=1)
-    await procesar_resumen_unificado(interaction, titulo=f"Resumen de {f_inicio.strftime('%d/%m')}", after_dt=f_inicio, before_dt=f_fin)
+@grupo_resumen.command(name="tiempo")
+async def res_tiempo(interaction: discord.Interaction, horas: int):
+    after_dt = datetime.now(timezone.utc) - timedelta(hours=horas)
+    await obtener_resumen(interaction, f"Resumen de las últimas {horas} horas", after=after_dt)
 
-@grupo_resumen.command(name="rango", description="Resumen día por día en un rango (máx 10 días)")
-@app_commands.describe(inicio="Inicio (DD/MM)", fin="Fin (DD/MM)")
-async def resumen_rango(interaction: discord.Interaction, inicio: str, fin: str):
-    f_i = parsear_fecha(inicio)
-    f_f = parsear_fecha(fin)
-    
-    if not f_i or not f_f:
-        return await interaction.response.send_message("❌ Fecha inválida.", ephemeral=True)
-    if f_i > f_f:
-        return await interaction.response.send_message("❌ La fecha de inicio debe ser anterior a la de fin.", ephemeral=True)
-    if (f_f - f_i).days > 10:
-        return await interaction.response.send_message("❌ El rango no puede superar los 10 días.", ephemeral=True)
-
-    await interaction.response.defer()
-    respuestas_dias = []
-    dia_actual = f_i
-
-    while dia_actual <= f_f:
-        siguiente_dia = dia_actual + timedelta(days=1)
-        resumen_dia_txt = await obtener_resumen_de_rango(interaction.channel, dia_actual, siguiente_dia)
-        etiqueta_fecha = dia_actual.strftime("%d/%m")
-        
-        if resumen_dia_txt:
-            respuestas_dias.append(f"📌 **Resumen de {etiqueta_fecha}**\n{resumen_dia_txt}")
-        else:
-            respuestas_dias.append(f"📌 **Resumen de {etiqueta_fecha}**\n*Sin actividad/mensajes registrados.*")
-        dia_actual = siguiente_dia
-
-    resultado_final = "\n\n".join(respuestas_dias)
-    if len(resultado_final) > 2000:
-        resultado_final = resultado_final[:1990] + "..."
-    await interaction.followup.send(resultado_final)
-
-@grupo_resumen.command(name="mensajes", description="Resumen por cantidad de mensajes")
-@app_commands.describe(cantidad="Cantidad de mensajes (máx 500)")
-async def resumen_mensajes(interaction: discord.Interaction, cantidad: int):
-    limite = min(cantidad, 500)
-    await procesar_resumen_unificado(interaction, titulo=f"Resumen de los últimos {limite} mensajes", limite=limite)
-
-@grupo_resumen.command(name="tiempo", description="Resumen por horas o minutos transcurridos")
-@app_commands.describe(unidad="Horas o Minutos", valor="Cantidad de tiempo")
-@app_commands.choices(unidad=[app_commands.Choice(name="Horas", value="horas"), app_commands.Choice(name="Minutos", value="minutos")])
-async def resumen_tiempo(interaction: discord.Interaction, unidad: app_commands.Choice[str], valor: int):
-    ahora = datetime.now(timezone.utc)
-    if unidad.value == "horas":
-        after_dt = ahora - timedelta(hours=valor)
-        titulo_txt = f"Resumen de las últimas {valor} hora(s)"
-    else:
-        after_dt = ahora - timedelta(minutes=valor)
-        titulo_txt = f"Resumen de los últimos {valor} minuto(s)"
-    await procesar_resumen_unificado(interaction, titulo=titulo_txt, after_dt=after_dt)
+@grupo_resumen.command(name="persona")
+async def res_persona(interaction: discord.Interaction, usuario: discord.Member, fecha: str):
+    dt = parsear_fecha(fecha)
+    if not dt: return await interaction.response.send_message("❌ Fecha inválida.", ephemeral=True)
+    dt_fin = dt.replace(hour=23, minute=59, second=59)
+    await obtener_resumen(interaction, f"Actividad de {usuario.display_name} el {fecha}", after=dt, before=dt_fin, autor=usuario)
 
 bot.tree.add_command(grupo_resumen)
 
 # =====================================================================
-# 🛠️ 4. GESTIÓN DE CANALES Y CATEGORÍAS (/gestionar)
+# 🛠️ 5. GESTIÓN ADMINISTRATIVA (/gestionar)
 # =====================================================================
-grupo_gestionar = app_commands.Group(name="gestionar", description="Crea, renombra y organiza canales y categorías")
+grupo_gestionar = app_commands.Group(name="gestionar", description="Gestión del servidor")
 
-@grupo_gestionar.command(name="canales", description="Crea hasta 5 canales de texto")
-@app_commands.default_permissions(manage_channels=True)
+@grupo_gestionar.command(name="canales")
 @app_commands.checks.has_permissions(manage_channels=True)
-@app_commands.describe(nombres="Nombres separados por comas", categoria="Categoría donde ubicarlos (opcional)")
 async def crear_canales(interaction: discord.Interaction, nombres: str, categoria: Optional[discord.CategoryChannel] = None):
     await interaction.response.defer(ephemeral=True)
-    lista_nombres = [n.strip() for n in nombres.split(",") if n.strip()][:5]
+    nombres_list = [n.strip() for n in nombres.split(",") if n.strip()][:5]
     creados = []
-    
-    for nom in lista_nombres:
-        ch = await interaction.guild.create_text_channel(name=nom, category=categoria)
+    for n in nombres_list:
+        ch = await interaction.guild.create_text_channel(name=n, category=categoria)
         creados.append(ch.mention)
-    
-    cat_txt = f" en **{categoria.name}**" if categoria else ""
-    await interaction.followup.send(f"✅ Canales creados{cat_txt}: {', '.join(creados)}")
+    await interaction.followup.send(f"✅ Creados: {', '.join(creados)}")
 
-@grupo_gestionar.command(name="categoria", description="Crea una categoría nueva")
-@app_commands.default_permissions(manage_channels=True)
+@grupo_gestionar.command(name="categoria")
 @app_commands.checks.has_permissions(manage_channels=True)
-@app_commands.describe(nombre="Nombre de la nueva categoría")
 async def crear_categoria(interaction: discord.Interaction, nombre: str):
     await interaction.response.defer(ephemeral=True)
-    nueva_cat = await interaction.guild.create_category(name=nombre)
-    await interaction.followup.send(f"✅ Categoría **{nueva_cat.name}** creada con éxito.")
+    cat = await interaction.guild.create_category(name=nombre)
+    await interaction.followup.send(f"✅ Categoría **{cat.name}** creada.")
 
-@grupo_gestionar.command(name="renombrar", description="Cambia el nombre de un canal existente")
-@app_commands.default_permissions(manage_channels=True)
+@grupo_gestionar.command(name="renombrar")
 @app_commands.checks.has_permissions(manage_channels=True)
-@app_commands.describe(canal="Canal que deseas renombrar", nuevo_nombre="Nuevo nombre para el canal")
-async def renombrar_canal(interaction: discord.Interaction, canal: discord.abc.GuildChannel, nuevo_nombre: str):
-    await interaction.response.defer(ephemeral=True)
-    nombre_antiguo = canal.name
-    try:
-        await canal.edit(name=nuevo_nombre)
-        await interaction.followup.send(f"✏️ El canal **#{nombre_antiguo}** ahora se llama {canal.mention}.")
-    except Exception as e:
-        await interaction.followup.send(f"❌ Error al renombrar el canal: {e}")
+async def renombrar_canal(interaction: discord.Interaction, canal: discord.TextChannel, nuevo_nombre: str):
+    await canal.edit(name=nuevo_nombre.replace(" ", "-"))
+    await interaction.response.send_message(f"✅ Canal renombrado a {canal.mention}.", ephemeral=True)
 
 bot.tree.add_command(grupo_gestionar)
 
 # =====================================================================
-# 🗑️ 5. ELIMINACIÓN Y BORRADO (/eliminar)
+# 🗑️ 6. ELIMINACIÓN DE CANALES (/eliminar)
 # =====================================================================
-grupo_eliminar = app_commands.Group(name="eliminar", description="Opciones de borrado y purga")
+grupo_eliminar = app_commands.Group(name="eliminar", description="Opciones de eliminación de canales")
 
-class ConfirmarEliminacion(discord.ui.View):
-    def __init__(self, accion):
-        super().__init__(timeout=30)
-        self.accion = accion
+class ConfirmarBorradoCanales(discord.ui.View):
+    def __init__(self, canales: List[discord.abc.GuildChannel]):
+        super().__init__(timeout=45)
+        self.canales = canales
 
-    @discord.ui.button(label="Sí, confirmar", style=discord.ButtonStyle.danger)
+    @discord.ui.button(label="🔴 Seguro", style=discord.ButtonStyle.danger)
     async def confirm(self, interaction: discord.Interaction, button: discord.ui.Button):
-        if self.accion == "canal":
-            await interaction.response.send_message("🗑️ Borrando canal...")
-            await interaction.channel.delete()
-        elif self.accion == "mensajes":
-            await interaction.response.defer(ephemeral=True)
-            deleted = await interaction.channel.purge(limit=100)
-            await interaction.followup.send(f"🧹 Se borraron {len(deleted)} mensajes.", ephemeral=True)
+        await interaction.response.edit_message(content="🗑️ Eliminando canales...", view=None)
+        eliminados = 0
+        for c in self.canales:
+            try:
+                await c.delete()
+                eliminados += 1
+            except: pass
+        if interaction.channel in self.canales: return # Si el canal actual fue borrado, no seguimos respondiendo
+        await interaction.followup.send(f"✅ Se eliminaron {eliminados} canales.", ephemeral=True)
 
-    @discord.ui.button(label="Cancelar", style=discord.ButtonStyle.secondary)
+    @discord.ui.button(label="⚪ Cancelar", style=discord.ButtonStyle.secondary)
     async def cancel(self, interaction: discord.Interaction, button: discord.ui.Button):
         await interaction.response.edit_message(content="❌ Operación cancelada.", view=None)
 
-@grupo_eliminar.command(name="canal", description="Borra por completo este canal")
-@app_commands.default_permissions(manage_channels=True)
+@grupo_eliminar.command(name="actual", description="Borra el canal actual")
 @app_commands.checks.has_permissions(manage_channels=True)
-async def borrar_canal(interaction: discord.Interaction):
-    view = ConfirmarEliminacion(accion="canal")
-    await interaction.response.send_message("⚠️ **¿Estás seguro de eliminar este canal por completo?**", view=view, ephemeral=True)
+async def elim_actual(interaction: discord.Interaction):
+    view = ConfirmarBorradoCanales([interaction.channel])
+    await interaction.response.send_message("⚠️ **¿Seguro que quieres eliminar ESTE canal? La acción es irreversible.**", view=view, ephemeral=True)
 
-@grupo_eliminar.command(name="mensajes", description="Limpia los últimos 100 mensajes de este canal")
-@app_commands.default_permissions(manage_messages=True)
-@app_commands.checks.has_permissions(manage_messages=True)
-async def purgar_mensajes(interaction: discord.Interaction):
-    view = ConfirmarEliminacion(accion="mensajes")
-    await interaction.response.send_message("⚠️ **¿Confirmas borrar los últimos 100 mensajes?**", view=view, ephemeral=True)
+@grupo_eliminar.command(name="especificos", description="Selecciona hasta 5 canales para borrar")
+@app_commands.checks.has_permissions(manage_channels=True)
+async def elim_especificos(interaction: discord.Interaction):
+    class SelectEliminar(discord.ui.View):
+        def __init__(self):
+            super().__init__(timeout=60)
+            self.select = discord.ui.ChannelSelect(
+                placeholder="Elige hasta 5 canales...", 
+                max_values=5, 
+                channel_types=[discord.ChannelType.text, discord.ChannelType.voice]
+            )
+            self.select.callback = self.callback
+            self.add_item(self.select)
+            
+        async def callback(self, inter: discord.Interaction):
+            canales_obj = [inter.guild.get_channel(c.id) for c in self.select.values if inter.guild.get_channel(c.id)]
+            nombres = ", ".join([c.name for c in canales_obj])
+            view = ConfirmarBorradoCanales(canales_obj)
+            await inter.response.edit_message(content=f"⚠️ **¿Seguro que quieres eliminar estos canales?**\n`{nombres}`", view=view)
+
+    await interaction.response.send_message("🗑️ **Selecciona los canales a eliminar:**", view=SelectEliminar(), ephemeral=True)
+
+@grupo_eliminar.command(name="masivo", description="Borra en lote canales que contengan una palabra")
+@app_commands.checks.has_permissions(manage_channels=True)
+async def elim_masivo(interaction: discord.Interaction, filtro: str, cantidad: int):
+    if cantidad > 500: return await interaction.response.send_message("❌ El límite masivo es 500 canales.", ephemeral=True)
+    canales_coincidentes = [c for c in interaction.guild.channels if filtro.lower() in c.name.lower()][:cantidad]
+    
+    if not canales_coincidentes:
+        return await interaction.response.send_message(f"❌ No encontré ningún canal que contenga `{filtro}`.", ephemeral=True)
+        
+    view = ConfirmarBorradoCanales(canales_coincidentes)
+    await interaction.response.send_message(f"⚠️ **¿Seguro que quieres eliminar {len(canales_coincidentes)} canales que contienen `{filtro}`?**", view=view, ephemeral=True)
 
 bot.tree.add_command(grupo_eliminar)
 
@@ -389,43 +489,21 @@ bot.tree.add_command(grupo_eliminar)
 @bot.tree.error
 async def on_app_command_error(interaction: discord.Interaction, error: app_commands.AppCommandError):
     if isinstance(error, app_commands.MissingPermissions):
-        mensaje_error = "❌ No tienes los permisos necesarios para usar este comando."
-        if interaction.response.is_done():
-            await interaction.followup.send(mensaje_error, ephemeral=True)
-        else:
-            await interaction.response.send_message(mensaje_error, ephemeral=True)
-    else:
-        print(f"Error no controlado: {error}")
-
-# =====================================================================
-# 📬 6. DETECCIÓN DE MENSAJES DE CHAT
-# =====================================================================
-@bot.event
-async def on_message(message: discord.Message):
-    if message.author.bot or not message.guild:
-        return
-
-    contenido_lc = message.content.lower()
-
-    if "se define en el dashboard" in contenido_lc or "dashboard" in contenido_lc:
-        await message.channel.send("📌 **Carek:** La información y configuraciones generales del bot se definen desde el panel de administración.")
-
-    await bot.process_commands(message)
+        msg = "❌ No tienes los permisos necesarios para ejecutar este comando."
+        if interaction.response.is_done(): await interaction.followup.send(msg, ephemeral=True)
+        else: await interaction.response.send_message(msg, ephemeral=True)
 
 # =====================================================================
 # ❓ 7. AYUDA (/help)
 # =====================================================================
-@bot.tree.command(name="help", description="Guía de uso del bot")
+@bot.tree.command(name="help", description="Guía completa de comandos de Carek")
 async def help_command(interaction: discord.Interaction):
-    embed = discord.Embed(
-        title="🤖 MANUAL DE COMANDOS",
-        description="Bot con IA conectada a la web en tiempo real:",
-        color=discord.Color.blue()
-    )
-    embed.add_field(name="💬 IA", value="`/ia` (con búsqueda en vivo) • `/limpiar mi_historial` • `/limpiar todo`", inline=False)
-    embed.add_field(name="📊 Resumen", value="`/resumen defecto` • `/resumen hoy` • `/resumen dia`\n`/resumen rango` • `/resumen mensajes` • `/resumen tiempo`", inline=False)
+    embed = discord.Embed(title="🤖 MANUAL DE COMANDOS CAREK", color=discord.Color.blue())
+    embed.add_field(name="💬 IA y Limpieza", value="`/ia` • `/limpiar mi_historial` • `/limpiar todo`", inline=False)
+    embed.add_field(name="🎨 Tipografías", value="`/fuente escanear` • `/fuente aplicar` • `/fuente listar`\n`/fuente probar` • `/fuente eliminar`", inline=False)
+    embed.add_field(name="📊 Resúmenes", value="`/resumen defecto` • `/resumen hoy` • `/resumen dia`\n`/resumen rango` • `/resumen mensajes`\n`/resumen tiempo` • `/resumen persona`", inline=False)
     embed.add_field(name="🛠️ Gestión", value="`/gestionar canales` • `/gestionar categoria` • `/gestionar renombrar`", inline=False)
-    embed.add_field(name="🗑️ Eliminación", value="`/eliminar canal` • `/eliminar mensajes`", inline=False)
+    embed.add_field(name="🗑️ Purga de Canales", value="`/eliminar actual` • `/eliminar especificos` • `/eliminar masivo`", inline=False)
     await interaction.response.send_message(embed=embed)
 
 # =====================================================================
@@ -436,5 +514,5 @@ if __name__ == "__main__":
     if not TOKEN:
         print("❌ ERROR: Falta la variable DISCORD_TOKEN.")
     else:
-        keep_alive()  # <-- Levanta el servidor Flask para Render
+        keep_alive()
         bot.run(TOKEN)
