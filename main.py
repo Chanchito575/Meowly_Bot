@@ -58,7 +58,7 @@ hf_client = openai.AsyncOpenAI(
 
 # 2. Cliente Mistral AI (para Mistral)
 mistral_client = openai.AsyncOpenAI(
-    base_url="https://api.mistral.ai/v1",
+    base_url="https://api.mistral.ai/v1/",
     api_key=os.getenv("MISTRAL_API_KEY")
     timeout=15.0
 )
