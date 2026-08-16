@@ -11,7 +11,9 @@ from discord import app_commands
 from discord.ext import commands
 from duckduckgo_search import DDGS
 from keep_alive import keep_alive  # Servidor web Flask para Render
-import openai # OpenRouter usa la librería de OpenAI
+
+import openai
+from groq import AsyncGroq # Librería oficial de Groq
 
 # =====================================================================
 # ⚙️ CONFIGURACIÓN DEL BOT Y CLIENTES
@@ -44,16 +46,30 @@ class HistorialIA:
 
 memoria_ia = collections.defaultdict(HistorialIA)
 
-# Cliente de OpenRouter
-openrouter_client = openai.AsyncOpenAI(
-    base_url="https://openrouter.ai/api/v1",
-    api_key=os.getenv("OPENROUTER_API_KEY"),
+# ---------------------------------------------------------
+# 🤖 CONFIGURACIÓN DE LOS CLIENTES DE IA
+# ---------------------------------------------------------
+# 1. Cliente Hugging Face (para Qwen)
+hf_client = openai.AsyncOpenAI(
+    base_url="https://api-inference.huggingface.co/v1/",
+    api_key=os.getenv("HF_TOKEN")
 )
 
-# Nuevos Modelos Gratuitos del Ensamble
-MODELO_QWEN = "qwen/qwen-2.5-coder-32b-instruct:free"   # Lógica, código y fuentes
-MODELO_MISTRAL = "mistralai/mistral-small-24b-instruct-2501:free" # Fluidez y resúmenes
-MODELO_JUEZ = "meta-llama/llama-3.3-70b-instruct:free"   # Juez para combinar respuestas
+# 2. Cliente Mistral AI (para Mistral)
+mistral_client = openai.AsyncOpenAI(
+    base_url="https://api.mistral.ai/v1",
+    api_key=os.getenv("MISTRAL_API_KEY")
+)
+
+# 3. Cliente Groq (para Llama Juez)
+groq_client = AsyncGroq(
+    api_key=os.getenv("GROQ_API_KEY")
+)
+
+# Modelos correspondientes a cada proveedor
+MODELO_QWEN = "Qwen/Qwen2.5-Coder-32B-Instruct" # Hugging Face Serverless
+MODELO_MISTRAL = "mistral-small-latest"         # API directa de Mistral
+MODELO_JUEZ = "llama-3.3-70b-versatile"         # API de Groq
 
 @bot.event
 async def on_ready():
@@ -120,7 +136,7 @@ async def buscar_en_web(consulta: str) -> str:
     return await loop.run_in_executor(None, _ejecutar_busqueda_ddg, consulta)
 
 # =====================================================================
-# 🧠 ENSAMBLE DE IAS (OpenRouter)
+# 🧠 ENSAMBLE DE IAS (Multicliente)
 # =====================================================================
 async def consultar_ensamble(prompt_o_mensajes, es_resumen=False, info_web="") -> str:
     if es_resumen:
@@ -132,8 +148,8 @@ async def consultar_ensamble(prompt_o_mensajes, es_resumen=False, info_web="") -
             {"role": "system", "content": system_prompt},
             {"role": "user", "content": f"Resume lo siguiente:\n\n{prompt_o_mensajes}"}
         ]
-        # Mistral Small es excelente para resúmenes
-        resp = await openrouter_client.chat.completions.create(
+        # Mistral Small (via mistral_client) es excelente para resúmenes
+        resp = await mistral_client.chat.completions.create(
             model=MODELO_MISTRAL, messages=messages, temperature=0.5, max_tokens=1024
         )
         return resp.choices[0].message.content
@@ -145,11 +161,11 @@ async def consultar_ensamble(prompt_o_mensajes, es_resumen=False, info_web="") -
     messages = base_messages + list(prompt_o_mensajes)
 
     try:
-        # Tareas en paralelo de forma asíncrona nativa
-        tarea_qwen = openrouter_client.chat.completions.create(
+        # Tareas en paralelo: Qwen (HF) y Mistral (Mistral AI)
+        tarea_qwen = hf_client.chat.completions.create(
             model=MODELO_QWEN, messages=messages, temperature=0.5, max_tokens=600
         )
-        tarea_mistral = openrouter_client.chat.completions.create(
+        tarea_mistral = mistral_client.chat.completions.create(
             model=MODELO_MISTRAL, messages=messages, temperature=0.7, max_tokens=600
         )
 
@@ -161,7 +177,8 @@ async def consultar_ensamble(prompt_o_mensajes, es_resumen=False, info_web="") -
             {"role": "system", "content": "Eres Carek. Combina los datos exactos y lógica de la Opción A con la fluidez de la Opción B. Usa Markdown."},
             {"role": "user", "content": f"Opción A:\n{texto_qwen}\n\nOpción B:\n{texto_mistral}\n\nGenera la respuesta final ideal:"}
         ]
-        resp_final = await openrouter_client.chat.completions.create(
+        # Groq (Llama Juez) evalúa y unifica la respuesta
+        resp_final = await groq_client.chat.completions.create(
             model=MODELO_JUEZ, messages=prompt_juez, temperature=0.7, max_tokens=1000
         )
         return resp_final.choices[0].message.content
@@ -174,8 +191,8 @@ async def ia_extraer_mapeo_fuente(ejemplo_texto: str) -> dict:
         "un JSON con el mapeo del abecedario. Responde ÚNICAMENTE el JSON.\n"
         'Estructura: {"a": "...", "A": "..."}'
     )
-    # Qwen es mejor para asegurar el formato JSON
-    completion = await openrouter_client.chat.completions.create(
+    # Qwen (via hf_client) es mejor para asegurar el formato JSON
+    completion = await hf_client.chat.completions.create(
         model=MODELO_QWEN, messages=[{"role": "user", "content": prompt}], temperature=0.1
     )
     
