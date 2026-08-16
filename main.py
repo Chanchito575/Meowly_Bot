@@ -53,17 +53,20 @@ memoria_ia = collections.defaultdict(HistorialIA)
 hf_client = openai.AsyncOpenAI(
     base_url="https://api-inference.huggingface.co/v1/",
     api_key=os.getenv("HF_TOKEN")
+    timeout=15.0
 )
 
 # 2. Cliente Mistral AI (para Mistral)
 mistral_client = openai.AsyncOpenAI(
     base_url="https://api.mistral.ai/v1",
     api_key=os.getenv("MISTRAL_API_KEY")
+    timeout=15.0
 )
 
 # 3. Cliente Groq (para Llama Juez)
 groq_client = AsyncGroq(
     api_key=os.getenv("GROQ_API_KEY")
+    timeout=15.0
 )
 
 # Modelos correspondientes a cada proveedor
