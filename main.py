@@ -90,7 +90,7 @@ groq_client = AsyncGroq(
 
 MODELO_QWEN = "Qwen/Qwen2.5-Coder-32B-Instruct" 
 MODELO_MISTRAL = "mistral-small-latest"         
-MODELO_JUEZ = "llama-3.1-70b-versatile"         
+MODELO_JUEZ = "llama-3.1-8b-instant"         
 
 @bot.event
 async def on_ready():
