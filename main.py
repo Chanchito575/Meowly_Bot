@@ -178,7 +178,7 @@ async def consultar_ensamble(prompt_o_mensajes, es_resumen=False, info_web="") -
 
     system_instrucciones = (
         "Eres Meowly, un asistente amigable, moderno y carismático para Discord. "
-        "Si los usuarios te preguntan quién te creó o quién es tu creador, debes responder siempre exactamente: 'me creó <@1122162289206902845>'."
+        "Si los usuarios te preguntan quién te creó o quién es tu creador, debes responder algo similar a esto: 'me creó <@1122162289206902845>'."
     )
     
     base_messages = [{"role": "system", "content": system_instrucciones}]
@@ -223,7 +223,6 @@ async def consultar_ensamble(prompt_o_mensajes, es_resumen=False, info_web="") -
         return resp_final.choices[0].message.content
     except Exception as e:
         return texto_qwen
-
 async def ia_extraer_mapeo_fuente(ejemplo_texto: str) -> dict:
     prompt = (
         f"Analiza la tipografía del texto: '{ejemplo_texto}'. Extrae los caracteres especiales "
@@ -231,20 +230,42 @@ async def ia_extraer_mapeo_fuente(ejemplo_texto: str) -> dict:
         "Responde ÚNICAMENTE el JSON sin bloques de código ni explicación adicional.\n"
         'Ejemplo de salida: {"a": "ⓐ", "b": "ⓑ", "A": "Ⓐ"}'
     )
-    completion = await groq_client.chat.completions.create(
-        model=MODELO_JUEZ,
-        messages=[{"role": "user", "content": prompt}],
-        temperature=0.1,
-        max_tokens=500
-    )
     
-    contenido = completion.choices[0].message.content.strip()
-    if "```json" in contenido:
-        contenido = contenido.split("```json")[1].split("```")[0].strip()
-    elif "```" in contenido:
-        contenido = contenido.split("```")[1].split("```")[0].strip()
-        
-    return json.loads(contenido)
+    # 1. Intento principal con Mistral (Muy estable)
+    try:
+        resp = await mistral_client.chat.completions.create(
+            model=MODELO_MISTRAL,
+            messages=[{"role": "user", "content": prompt}],
+            temperature=0.1,
+            max_tokens=500
+        )
+        contenido = resp.choices[0].message.content.strip()
+        if "```json" in contenido:
+            contenido = contenido.split("```json")[1].split("```")[0].strip()
+        elif "```" in contenido:
+            contenido = contenido.split("```")[1].split("```")[0].strip()
+        return json.loads(contenido)
+    except Exception as e:
+        print(f"⚠️ Mistral falló procesando fuente: {e}. Probando respaldo...")
+
+    # 2. Respaldo secundario con Hugging Face (Qwen)
+    try:
+        resp = await hf_client.chat.completions.create(
+            model=MODELO_QWEN,
+            messages=[{"role": "user", "content": prompt}],
+            temperature=0.1,
+            max_tokens=500
+        )
+        contenido = resp.choices[0].message.content.strip()
+        if "```json" in contenido:
+            contenido = contenido.split("```json")[1].split("```")[0].strip()
+        elif "```" in contenido:
+            contenido = contenido.split("```")[1].split("```")[0].strip()
+        return json.loads(contenido)
+    except Exception as e:
+        print(f"⚠️ Hugging Face también falló: {e}")
+
+    raise Exception("No se pudo procesar el formato JSON de la fuente.")
 
 # =====================================================================
 # 🕵️ COMANDO SECRETOS Y DIAGNÓSTICO PRIVADO (/testear)
