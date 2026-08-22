@@ -19,8 +19,10 @@ import firebase_admin
 from firebase_admin import credentials, firestore
 
 # =====================================================================
-# 🔥 INICIALIZACIÓN DE FIREBASE FIRESTORE
+# 🔐 CONFIGURACIÓN DE PROPIETARIO Y FIREBASE
 # =====================================================================
+MI_DISCORD_ID = 1122162289206902845  # Tu ID exclusivo para comandos secretos
+
 firebase_json = os.getenv("FIREBASE_CREDENTIALS")
 db = None
 
@@ -45,7 +47,6 @@ intents.guilds = True
 
 bot = commands.Bot(command_prefix=".", intents=intents, help_command=None)
 
-# Memoria inteligente: 20 mensajes de tope y caducidad tras 45 mins de inactividad
 class HistorialIA:
     def __init__(self):
         self.mensajes = collections.deque(maxlen=20)
@@ -94,7 +95,7 @@ MODELO_JUEZ = "llama-3.3-70b-versatile"
 @bot.event
 async def on_ready():
     await bot.tree.sync()
-    actividad = discord.Game(name="creado por Chanchito575 | /help")
+    actividad = discord.Game(name="creado por <@1122162289206902845> | /help")
     await bot.change_presence(status=discord.Status.online, activity=actividad)
     print(f"✅ Bot conectado con éxito como {bot.user}")
 
@@ -160,7 +161,7 @@ async def buscar_en_web(consulta: str) -> str:
 async def consultar_ensamble(prompt_o_mensajes, es_resumen=False, info_web="") -> str:
     if es_resumen:
         system_prompt = (
-            "Eres Carek, un asistente analítico. Resume la conversación desglosando "
+            "Eres Meowly, un asistente analítico. Resume la conversación desglosando "
             "los puntos clave exactos. Usa un formato claro con viñetas y emojis."
         )
         messages = [
@@ -175,7 +176,12 @@ async def consultar_ensamble(prompt_o_mensajes, es_resumen=False, info_web="") -
         except Exception as e:
             return f"❌ Error en Mistral (Resumen): {e}"
 
-    base_messages = [{"role": "system", "content": "Eres Carek, un asistente amigable, moderno y carismático para Discord."}]
+    system_instrucciones = (
+        "Eres Meowly, un asistente amigable, moderno y carismático para Discord. "
+        "Si los usuarios te preguntan quién te creó o quién es tu creador, debes responder siempre exactamente: 'me creó <@1122162289206902845>'."
+    )
+    
+    base_messages = [{"role": "system", "content": system_instrucciones}]
     if info_web:
         base_messages.append({"role": "user", "content": f"Información web reciente para usar de contexto si es necesario:\n{info_web}\n\n"})
     
@@ -208,7 +214,7 @@ async def consultar_ensamble(prompt_o_mensajes, es_resumen=False, info_web="") -
 
     try:
         prompt_juez = [
-            {"role": "system", "content": "Eres Carek. Combina los datos exactos y lógica de la Opción A con la fluidez de la Opción B. Usa Markdown."},
+            {"role": "system", "content": "Eres Meowly. Combina los datos exactos y lógica de la Opción A con la fluidez de la Opción B. Si te preguntan sobre quién te creó, asegúrate de mantener la respuesta: 'me creó <@1122162289206902845>'. Usa Markdown."},
             {"role": "user", "content": f"Opción A:\n{texto_qwen}\n\nOpción B:\n{texto_mistral}\n\nGenera la respuesta final ideal:"}
         ]
         resp_final = await groq_client.chat.completions.create(
@@ -241,31 +247,48 @@ async def ia_extraer_mapeo_fuente(ejemplo_texto: str) -> dict:
     return json.loads(contenido)
 
 # =====================================================================
-# 🧪 COMANDO /TESTEAR (Diagnóstico de Firebase y Latencia)
+# 🕵️ COMANDO SECRETOS Y DIAGNÓSTICO PRIVADO (/testear)
 # =====================================================================
-@bot.tree.command(name="testear", description="Comprueba la latencia del bot y la conexión a Firebase")
+@bot.tree.command(name="testear", description="Diagnóstico privado del bot")
 async def testear(interaction: discord.Interaction):
-    await interaction.response.defer()
+    if interaction.user.id != MI_DISCORD_ID:
+        return await interaction.response.send_message("❌ Comando no reconocido.", ephemeral=True)
+
+    await interaction.response.defer(ephemeral=True)
+    
     latencia = round(bot.latency * 1000)
     
-    estado_db = "❌ No configurado"
+    # Pruebas internas
+    estado_db = "❌ Desconectado"
     if db:
         try:
             db.collection("test").document("ping").set({"last_ping": datetime.now(timezone.utc).isoformat()})
-            estado_db = "✅ Conectado a Firestore (Nube)"
+            estado_db = "✅ Operativo (Firebase Firestore)"
         except Exception as e:
-            estado_db = f"❌ Error de acceso: {e}"
+            estado_db = f"❌ Error: {e}"
 
-    embed = discord.Embed(title="🧪 Diagnóstico de Estado - Carek", color=discord.Color.green())
+    try:
+        res_web = await buscar_en_web("Python")
+        estado_web = "✅ Operativo (DuckDuckGo)" if res_web and "No se pudo" not in res_web else "⚠️ Sin conexión"
+    except Exception as e:
+        estado_web = f"❌ Falla: {e}"
+
+    permisos = interaction.app_permissions
+    estado_permisos = "✅ Ok (Gestionar Canales)" if permisos.manage_channels else "❌ Faltan permisos de Administración"
+
+    embed = discord.Embed(title="🕵️ Diagnóstico Privado - Meowly", color=discord.Color.dark_purple())
     embed.add_field(name="📶 Latencia de Discord", value=f"`{latencia} ms`", inline=True)
-    embed.add_field(name="🔥 Base de Datos Firebase", value=f"`{estado_db}`", inline=False)
-    embed.set_footer(text="Carek Bot • Sistema en tiempo real")
-    await interaction.followup.send(embed=embed)
+    embed.add_field(name="🌐 Búsqueda Web", value=f"`{estado_web}`", inline=True)
+    embed.add_field(name="🔥 Base de Datos Cloud", value=f"`{estado_db}`", inline=False)
+    embed.add_field(name="🛠️ Permisos en Canal", value=f"`{estado_permisos}`", inline=False)
+    embed.set_footer(text="Vista exclusiva del Creador")
+
+    await interaction.followup.send(embed=embed, ephemeral=True)
 
 # =====================================================================
 # 💬 1. COMANDO /IA
 # =====================================================================
-@bot.tree.command(name="ia", description="Habla con Carek (Ensamble de IAs)")
+@bot.tree.command(name="ia", description="Habla con Meowly (Ensamble de IAs)")
 @app_commands.describe(mensaje="Tu pregunta o consulta")
 async def ia(interaction: discord.Interaction, mensaje: str):
     await interaction.response.defer()
@@ -288,35 +311,35 @@ async def ia(interaction: discord.Interaction, mensaje: str):
     if len(respuesta) > 2000:
         respuesta = respuesta[:1990] + "..."
         
-    await interaction.followup.send(f"🤖 {respuesta}")
+    await interaction.followup.send(f"🐱 {respuesta}")
 
 # =====================================================================
 # 🎨 2. GESTIÓN DE TIPOGRAFÍAS (/fuente)
 # =====================================================================
 grupo_fuente = app_commands.Group(name="fuente", description="Gestión de tipografías")
+grupo_escanear = app_commands.Group(name="escanear", description="Escanear y guardar tipografías", parent=grupo_fuente)
 
-@grupo_fuente.command(name="escanear", description="Extrae la fuente de un canal existente y la guarda en la nube")
+@grupo_escanear.command(name="mensaje", description="Extrae una fuente directamente desde un texto o abecedario")
 @app_commands.checks.has_permissions(manage_channels=True)
-async def escanear_fuente(interaction: discord.Interaction, nombre_guardar: str):
-    canales_texto = [c for c in interaction.guild.channels if isinstance(c, discord.TextChannel)]
-    class SelectCanalView(discord.ui.View):
-        def __init__(self):
-            super().__init__(timeout=60)
-            self.select = discord.ui.Select(options=[discord.SelectOption(label=f"#{c.name}", value=str(c.id)) for c in canales_texto[:25]])
-            self.select.callback = self.callback
-            self.add_item(self.select)
+async def escanear_mensaje(interaction: discord.Interaction, mensaje: str, nombre_guardar: str):
+    await interaction.response.defer()
+    try:
+        mapeo = await ia_extraer_mapeo_fuente(mensaje)
+        guardar_fuente(interaction.guild_id, nombre_guardar, mapeo)
+        await interaction.followup.send(f"🧠 Se analizó el texto ingresado y se guardó la fuente **{nombre_guardar}** permanentemente en Firebase.")
+    except Exception as e:
+        await interaction.followup.send(f"❌ Error al procesar la tipografía: {e}")
 
-        async def callback(self, inter: discord.Interaction):
-            await inter.response.defer()
-            canal = inter.guild.get_channel(int(self.select.values[0]))
-            try:
-                mapeo = await ia_extraer_mapeo_fuente(canal.name)
-                guardar_fuente(inter.guild_id, nombre_guardar, mapeo)
-                await inter.followup.send(f"🧠 Se analizó {canal.mention} y se guardó la fuente **{nombre_guardar}** permanentemente en Firebase.")
-            except Exception as e:
-                await inter.followup.send(f"❌ Error al procesar la tipografía: {e}")
-
-    await interaction.response.send_message("📋 **Selecciona el canal para escanear:**", view=SelectCanalView())
+@grupo_escanear.command(name="canal", description="Extrae la fuente del nombre de un canal existente")
+@app_commands.checks.has_permissions(manage_channels=True)
+async def escanear_canal(interaction: discord.Interaction, canal: discord.TextChannel, nombre_guardar: str):
+    await interaction.response.defer()
+    try:
+        mapeo = await ia_extraer_mapeo_fuente(canal.name)
+        guardar_fuente(interaction.guild_id, nombre_guardar, mapeo)
+        await interaction.followup.send(f"🧠 Se analizó {canal.mention} y se guardó la fuente **{nombre_guardar}** permanentemente en Firebase.")
+    except Exception as e:
+        await interaction.followup.send(f"❌ Error al procesar la tipografía: {e}")
 
 @grupo_fuente.command(name="aplicar", description="Aplica una fuente guardada al nombre de un canal")
 @app_commands.checks.has_permissions(manage_channels=True)
@@ -571,20 +594,14 @@ async def on_app_command_error(interaction: discord.Interaction, error: app_comm
 @bot.tree.command(name="help", description="Muestra la guía explicativa completa de todos los comandos")
 async def help_command(interaction: discord.Interaction):
     embed = discord.Embed(
-        title="📖 GUÍA COMPLETA DE COMANDOS - CAREK BOT",
+        title="📖 GUÍA COMPLETA DE COMANDOS - MEOWLY BOT",
         description="A continuación tienes la explicación detallada de cada grupo de comandos y sus funciones.",
         color=discord.Color.blue()
     )
-    
-    embed.add_field(
-        name="🧪 Diagnóstico y Sistema",
-        value="• `/testear`: Muestra la latencia con Discord y comprueba el estado de conexión con Firebase Firestore.",
-        inline=False
-    )
 
     embed.add_field(
-        name="🤖 Inteligencia Artificial",
-        value="• `/ia <mensaje>`: Conversa con Carek (combina Qwen 2.5, Mistral y Groq Llama 3.3). Busca información en la web si detecta preguntas de temas actuales.",
+        name="🐱 Inteligencia Artificial",
+        value="• `/ia <mensaje>`: Conversa con Meowly (combina Qwen 2.5, Mistral y Groq Llama 3.3). Busca información en la web si detecta preguntas de temas actuales.",
         inline=False
     )
     
@@ -600,7 +617,8 @@ async def help_command(interaction: discord.Interaction):
     embed.add_field(
         name="🎨 Gestión de Fuentes y Estilos (Firebase Cloud)",
         value=(
-            "• `/fuente escanear <nombre>`: Analiza el tipo de letra de un canal existente y lo guarda permanentemente en la nube.\n"
+            "• `/fuente escanear mensaje <mensaje> <nombre>`: Analiza un texto o abecedario que le envíes directamente y guarda su tipografía.\n"
+            "• `/fuente escanear canal <canal> <nombre>`: Analiza el tipo de letra del nombre de un canal existente.\n"
             "• `/fuente aplicar <canal> <estilo> [emoji]`: Aplica una fuente guardada al nombre de un canal.\n"
             "• `/fuente listar`: Lista las fuentes registradas en Firebase para este servidor.\n"
             "• `/fuente probar <texto> <estilo> [emoji]`: Muestra una vista previa de cómo quedaría un texto.\n"
@@ -643,7 +661,7 @@ async def help_command(interaction: discord.Interaction):
         inline=False
     )
 
-    embed.set_footer(text="Bot programado por Chanchito575")
+    embed.set_footer(text="Bot programado por <@1122162289206902845>")
     await interaction.response.send_message(embed=embed)
 
 # =====================================================================
