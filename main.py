@@ -15,6 +15,27 @@ from keep_alive import keep_alive  # Servidor web Flask para Render
 import openai
 from groq import AsyncGroq # Librería oficial de Groq
 
+import firebase_admin
+from firebase_admin import credentials, firestore
+
+# =====================================================================
+# 🔥 INICIALIZACIÓN DE FIREBASE FIRESTORE
+# =====================================================================
+firebase_json = os.getenv("FIREBASE_CREDENTIALS")
+db = None
+
+if firebase_json:
+    try:
+        cred_dict = json.loads(firebase_json)
+        cred = credentials.Certificate(cred_dict)
+        firebase_admin.initialize_app(cred)
+        db = firestore.client()
+        print("🔥 Firebase Firestore conectado con éxito.")
+    except Exception as e:
+        print(f"❌ Error al conectar con Firebase: {e}")
+else:
+    print("⚠️ Variable FIREBASE_CREDENTIALS no encontrada. El bot usará almacenamiento temporal.")
+
 # =====================================================================
 # ⚙️ CONFIGURACIÓN DEL BOT Y CLIENTES
 # =====================================================================
@@ -49,27 +70,23 @@ memoria_ia = collections.defaultdict(HistorialIA)
 # ---------------------------------------------------------
 # 🤖 CONFIGURACIÓN DE LOS CLIENTES DE IA
 # ---------------------------------------------------------
-# 1. Cliente Hugging Face (para Qwen)
 hf_client = openai.AsyncOpenAI(
     base_url="https://router.huggingface.co/v1/",
     api_key=os.getenv("HF_TOKEN"),
     timeout=15.0
 )
 
-# 2. Cliente Mistral AI (para Mistral)
 mistral_client = openai.AsyncOpenAI(
     base_url="https://api.mistral.ai/v1/",
     api_key=os.getenv("MISTRAL_API_KEY"),
     timeout=15.0
 )
 
-# 3. Cliente Groq (para Llama Juez)
 groq_client = AsyncGroq(
     api_key=os.getenv("GROQ_API_KEY"),
     timeout=15.0
 )
 
-# Modelos correspondientes a cada proveedor
 MODELO_QWEN = "Qwen/Qwen2.5-Coder-32B-Instruct" 
 MODELO_MISTRAL = "mistral-small-latest"         
 MODELO_JUEZ = "llama-3.3-70b-versatile"         
@@ -82,25 +99,24 @@ async def on_ready():
     print(f"✅ Bot conectado con éxito como {bot.user}")
 
 # =====================================================================
-# 📁 SISTEMA DE FUENTES
+# 📁 SISTEMA DE FUENTES (FIREBASE FIRESTORE)
 # =====================================================================
 def cargar_fuentes(guild_id: int) -> dict:
-    archivo = f"fuentes_{guild_id}.json"
-    if not os.path.exists(archivo): return {}
-    with open(archivo, "r", encoding="utf-8") as f: return json.load(f)
+    if not db: return {}
+    doc = db.collection("servidores").document(str(guild_id)).get()
+    return doc.to_dict().get("fuentes", {}) if doc.exists else {}
 
 def guardar_fuente(guild_id: int, nombre: str, mapeo: dict):
-    data = cargar_fuentes(guild_id)
-    data[nombre.lower()] = mapeo
-    with open(f"fuentes_{guild_id}.json", "w", encoding="utf-8") as f:
-        json.dump(data, f, indent=4)
+    if not db: return
+    doc_ref = db.collection("servidores").document(str(guild_id))
+    doc_ref.set({"fuentes": {nombre.lower(): mapeo}}, merge=True)
 
 def eliminar_fuente(guild_id: int, nombre: str) -> bool:
-    data = cargar_fuentes(guild_id)
-    if nombre.lower() in data:
-        del data[nombre.lower()]
-        with open(f"fuentes_{guild_id}.json", "w", encoding="utf-8") as f:
-            json.dump(data, f, indent=4)
+    if not db: return False
+    doc_ref = db.collection("servidores").document(str(guild_id))
+    doc = doc_ref.get()
+    if doc.exists and nombre.lower() in doc.to_dict().get("fuentes", {}):
+        doc_ref.update({f"fuentes.{nombre.lower()}": firestore.DELETE_FIELD})
         return True
     return False
 
@@ -225,6 +241,28 @@ async def ia_extraer_mapeo_fuente(ejemplo_texto: str) -> dict:
     return json.loads(contenido)
 
 # =====================================================================
+# 🧪 COMANDO /TESTEAR (Diagnóstico de Firebase y Latencia)
+# =====================================================================
+@bot.tree.command(name="testear", description="Comprueba la latencia del bot y la conexión a Firebase")
+async def testear(interaction: discord.Interaction):
+    await interaction.response.defer()
+    latencia = round(bot.latency * 1000)
+    
+    estado_db = "❌ No configurado"
+    if db:
+        try:
+            db.collection("test").document("ping").set({"last_ping": datetime.now(timezone.utc).isoformat()})
+            estado_db = "✅ Conectado a Firestore (Nube)"
+        except Exception as e:
+            estado_db = f"❌ Error de acceso: {e}"
+
+    embed = discord.Embed(title="🧪 Diagnóstico de Estado - Carek", color=discord.Color.green())
+    embed.add_field(name="📶 Latencia de Discord", value=f"`{latencia} ms`", inline=True)
+    embed.add_field(name="🔥 Base de Datos Firebase", value=f"`{estado_db}`", inline=False)
+    embed.set_footer(text="Carek Bot • Sistema en tiempo real")
+    await interaction.followup.send(embed=embed)
+
+# =====================================================================
 # 💬 1. COMANDO /IA
 # =====================================================================
 @bot.tree.command(name="ia", description="Habla con Carek (Ensamble de IAs)")
@@ -257,7 +295,7 @@ async def ia(interaction: discord.Interaction, mensaje: str):
 # =====================================================================
 grupo_fuente = app_commands.Group(name="fuente", description="Gestión de tipografías")
 
-@grupo_fuente.command(name="escanear", description="Extrae la fuente de un canal existente y la guarda")
+@grupo_fuente.command(name="escanear", description="Extrae la fuente de un canal existente y la guarda en la nube")
 @app_commands.checks.has_permissions(manage_channels=True)
 async def escanear_fuente(interaction: discord.Interaction, nombre_guardar: str):
     canales_texto = [c for c in interaction.guild.channels if isinstance(c, discord.TextChannel)]
@@ -274,9 +312,9 @@ async def escanear_fuente(interaction: discord.Interaction, nombre_guardar: str)
             try:
                 mapeo = await ia_extraer_mapeo_fuente(canal.name)
                 guardar_fuente(inter.guild_id, nombre_guardar, mapeo)
-                await inter.followup.send(f"🧠 Se analizó {canal.mention} y se guardó la fuente **{nombre_guardar}**.")
+                await inter.followup.send(f"🧠 Se analizó {canal.mention} y se guardó la fuente **{nombre_guardar}** permanentemente en Firebase.")
             except Exception as e:
-                await inter.followup.send(f"❌ Error al procesar JSON: {e}")
+                await inter.followup.send(f"❌ Error al procesar la tipografía: {e}")
 
     await interaction.response.send_message("📋 **Selecciona el canal para escanear:**", view=SelectCanalView())
 
@@ -286,7 +324,7 @@ async def aplicar_fuente_cmd(interaction: discord.Interaction, canal: discord.Te
     await interaction.response.defer()
     fuentes = cargar_fuentes(interaction.guild_id)
     if estilo.lower() not in fuentes:
-        return await interaction.followup.send(f"❌ Fuente **{estilo}** no encontrada.")
+        return await interaction.followup.send(f"❌ Fuente **{estilo}** no encontrada en la base de datos.")
     nombre_limpio = canal.name.split("｜")[-1].replace("-", " ").strip()
     nuevo_nombre = f"{emoji}｜{aplicar_mapeo(nombre_limpio, fuentes[estilo.lower()])}".replace(" ", "-")
     await canal.edit(name=nuevo_nombre)
@@ -296,7 +334,7 @@ async def aplicar_fuente_cmd(interaction: discord.Interaction, canal: discord.Te
 async def listar_fuentes(interaction: discord.Interaction):
     fuentes = cargar_fuentes(interaction.guild_id)
     if not fuentes: return await interaction.response.send_message("📂 No hay tipografías guardadas.")
-    embed = discord.Embed(title="🎨 Tipografías Registradas", color=discord.Color.blue())
+    embed = discord.Embed(title="🎨 Tipografías Registradas en Firebase", color=discord.Color.blue())
     for nombre, mapeo in fuentes.items():
         embed.add_field(name=f"📌 {nombre.capitalize()}", value=f"`{aplicar_mapeo('Ejemplo', mapeo)}`", inline=False)
     await interaction.response.send_message(embed=embed)
@@ -312,9 +350,9 @@ async def probar_fuente(interaction: discord.Interaction, texto: str, estilo: st
 @app_commands.checks.has_permissions(manage_channels=True)
 async def eliminar_fuente_cmd(interaction: discord.Interaction, nombre: str):
     if eliminar_fuente(interaction.guild_id, nombre):
-        await interaction.response.send_message(f"🗑️ Tipografía **{nombre}** eliminada.")
+        await interaction.response.send_message(f"🗑️ Tipografía **{nombre}** eliminada de Firebase.")
     else:
-        await interaction.response.send_message(f"❌ No se encontró **{nombre}**.")
+        await interaction.response.send_message(f"❌ No se encontró la fuente **{nombre}**.")
 
 bot.tree.add_command(grupo_fuente)
 
@@ -539,6 +577,12 @@ async def help_command(interaction: discord.Interaction):
     )
     
     embed.add_field(
+        name="🧪 Diagnóstico y Sistema",
+        value="• `/testear`: Muestra la latencia con Discord y comprueba el estado de conexión con Firebase Firestore.",
+        inline=False
+    )
+
+    embed.add_field(
         name="🤖 Inteligencia Artificial",
         value="• `/ia <mensaje>`: Conversa con Carek (combina Qwen 2.5, Mistral y Groq Llama 3.3). Busca información en la web si detecta preguntas de temas actuales.",
         inline=False
@@ -554,13 +598,13 @@ async def help_command(interaction: discord.Interaction):
     )
 
     embed.add_field(
-        name="🎨 Gestión de Fuentes y Estilos",
+        name="🎨 Gestión de Fuentes y Estilos (Firebase Cloud)",
         value=(
-            "• `/fuente escanear <nombre>`: Analiza el tipo de letra de un canal existente y guarda ese mapeo estilo fuente.\n"
+            "• `/fuente escanear <nombre>`: Analiza el tipo de letra de un canal existente y lo guarda permanentemente en la nube.\n"
             "• `/fuente aplicar <canal> <estilo> [emoji]`: Aplica una fuente guardada al nombre de un canal.\n"
-            "• `/fuente listar`: Lista las fuentes guardadas en el servidor.\n"
+            "• `/fuente listar`: Lista las fuentes registradas en Firebase para este servidor.\n"
             "• `/fuente probar <texto> <estilo> [emoji]`: Muestra una vista previa de cómo quedaría un texto.\n"
-            "• `/fuente eliminar <nombre>`: Borra una fuente de la lista del servidor."
+            "• `/fuente eliminar <nombre>`: Borra una fuente de la nube del servidor."
         ),
         inline=False
     )
