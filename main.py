@@ -22,23 +22,21 @@ from firebase_admin import credentials, firestore
 # 🔐 CONFIGURACIÓN DE PROPIETARIO Y FIREBASE
 # =====================================================================
 MI_DISCORD_ID = 1122162289206902845  # Tu ID exclusivo para comandos secretos
+b64_credentials = os.getenv("FIREBASE_CREDENTIALS_BASE64")
 
-firebase_json = os.getenv("FIREBASE_CREDENTIALS")
-db = None
-
-if firebase_json:
+if b64_credentials:
     try:
-        cred_dict = json.loads(firebase_json)
+        decoded_json = base64.b64decode(b64_credentials).decode("utf-8")
+        cred_dict = json.loads(decoded_json)
         cred = credentials.Certificate(cred_dict)
         firebase_admin.initialize_app(cred)
         db = firestore.client()
         print("🔥 Firebase Firestore conectado con éxito.")
     except Exception as e:
         print(f"❌ Error al conectar con Firebase: {e}")
-else:
-    print("⚠️ Variable FIREBASE_CREDENTIALS no encontrada. El bot usará almacenamiento temporal.")
+        db = None
 
-# =====================================================================
+=======================================================================
 # ⚙️ CONFIGURACIÓN DEL BOT Y CLIENTES
 # =====================================================================
 intents = discord.Intents.default()
