@@ -36,7 +36,7 @@ if b64_credentials:
         print(f"❌ Error al conectar con Firebase: {e}")
         db = None
 
-=======================================================================
+# =====================================================================
 # ⚙️ CONFIGURACIÓN DEL BOT Y CLIENTES
 # =====================================================================
 intents = discord.Intents.default()
