@@ -28,7 +28,6 @@ class Gestion(commands.Cog):
     def __init__(self, bot):
         self.bot = bot
 
-    # Grupo Gestionar
     grupo_gestionar = app_commands.Group(name="gestionar", description="Gestión del servidor")
 
     @grupo_gestionar.command(name="canales", description="Crea varios canales de texto separados por comas (Máx 5)")
@@ -55,7 +54,6 @@ class Gestion(commands.Cog):
         await canal.edit(name=nuevo_nombre.replace(" ", "-"))
         await interaction.response.send_message(f"✅ Canal renombrado a {canal.mention}.")
 
-    # Grupo Eliminar
     grupo_eliminar = app_commands.Group(name="eliminar", description="Opciones de eliminación de canales")
 
     @grupo_eliminar.command(name="actual", description="Borra el canal en el que te encuentras")
