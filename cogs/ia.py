@@ -13,9 +13,6 @@ from duckduckgo_search import DDGS
 import openai
 from groq import AsyncGroq
 
-# ---------------------------------------------------------
-# 🤖 MEMORIA Y CLIENTES DE IA
-# ---------------------------------------------------------
 class HistorialIA:
     def __init__(self):
         self.mensajes = collections.deque(maxlen=20)
@@ -58,9 +55,6 @@ MODELO_QWEN = "Qwen/Qwen2.5-Coder-32B-Instruct"
 MODELO_MISTRAL = "mistral-small-latest"         
 MODELO_JUEZ = "llama-3.1-8b-instant"         
 
-# ---------------------------------------------------------
-# 🔍 HELPERS BÚSQUEDA Y ENSAMBLE
-# ---------------------------------------------------------
 def necesita_busqueda(mensaje: str) -> bool:
     palabras_clave = [
         r"\bnoticia", r"\bhoy\b", r"\bactual", r"quién\b", r"qué es\b", 
@@ -167,9 +161,6 @@ def parsear_fecha(txt: str) -> Optional[datetime]:
     except: return None
     return None
 
-# ---------------------------------------------------------
-# 🧩 COG INTELIGENCIA ARTIFICIAL Y RESÚMENES
-# ---------------------------------------------------------
 class IA(commands.Cog):
     def __init__(self, bot):
         self.bot = bot
@@ -199,7 +190,6 @@ class IA(commands.Cog):
             
         await interaction.followup.send(f"🐱 {respuesta}")
 
-    # Grupo Limpiar
     grupo_limpiar = app_commands.Group(name="limpiar", description="Borra la memoria del bot")
 
     @grupo_limpiar.command(name="mi_historial", description="Borra tu conversación personal guardada con la IA")
@@ -213,7 +203,6 @@ class IA(commands.Cog):
         memoria_ia.clear()
         await interaction.response.send_message("🧹 Memoria global de la IA reiniciada para todos los usuarios.")
 
-    # Grupo Resumen
     grupo_resumen = app_commands.Group(name="resumen", description="Resúmenes inteligentes del chat")
 
     async def obtener_resumen(self, interaction: discord.Interaction, titulo: str, limit: int = 1000, after=None, before=None, autor=None):
