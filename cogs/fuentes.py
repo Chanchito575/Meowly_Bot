@@ -64,7 +64,6 @@ class Fuentes(commands.Cog):
 
         raise Exception("No se pudo procesar el formato JSON de la fuente.")
 
-    # Grupos de Fuentes
     grupo_fuente = app_commands.Group(name="fuente", description="Gestión de tipografías")
     grupo_escanear = app_commands.Group(name="escanear", description="Escanear y guardar tipografías", parent=grupo_fuente)
 
