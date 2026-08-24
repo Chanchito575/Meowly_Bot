@@ -9,9 +9,6 @@ from keep_alive import keep_alive
 import firebase_admin
 from firebase_admin import credentials, firestore
 
-# =====================================================================
-# 🔐 CONFIGURACIÓN Y FIREBASE
-# =====================================================================
 MI_DISCORD_ID = 1122162289206902845
 b64_credentials = os.getenv("FIREBASE_CREDENTIALS_BASE64")
 
@@ -27,9 +24,6 @@ if b64_credentials:
     except Exception as e:
         print(f"❌ Error al conectar con Firebase: {e}")
 
-# =====================================================================
-# ⚙️ INICIALIZACIÓN DEL BOT
-# =====================================================================
 intents = discord.Intents.default()
 intents.message_content = True
 intents.guilds = True
