@@ -13,6 +13,9 @@ from duckduckgo_search import DDGS
 import openai
 from groq import AsyncGroq
 
+# ---------------------------------------------------------
+# 🤖 MEMORIA Y CLIENTES DE IA
+# ---------------------------------------------------------
 class HistorialIA:
     def __init__(self):
         self.mensajes = collections.deque(maxlen=20)
@@ -55,6 +58,9 @@ MODELO_QWEN = "Qwen/Qwen2.5-Coder-32B-Instruct"
 MODELO_MISTRAL = "mistral-small-latest"         
 MODELO_JUEZ = "llama-3.1-8b-instant"         
 
+# ---------------------------------------------------------
+# 🔍 HELPERS BÚSQUEDA Y ENSAMBLE
+# ---------------------------------------------------------
 def necesita_busqueda(mensaje: str) -> bool:
     palabras_clave = [
         r"\bnoticia", r"\bhoy\b", r"\bactual", r"quién\b", r"qué es\b", 
@@ -95,7 +101,7 @@ async def consultar_ensamble(prompt_o_mensajes, es_resumen=False, info_web="") -
         ]
         try:
             resp = await mistral_client.chat.completions.create(
-                model=MODELO_MISTRAL, messages=messages, temperature=0.5, max_tokens=1024
+                model=MODELO_MISTRAL, messages=messages, temperature=0.5, max_tokens=1500
             )
             return resp.choices[0].message.content
         except Exception as e:
@@ -117,7 +123,7 @@ async def consultar_ensamble(prompt_o_mensajes, es_resumen=False, info_web="") -
 
     try:
         resp_qwen = await hf_client.chat.completions.create(
-            model=MODELO_QWEN, messages=messages, temperature=0.5, max_tokens=600
+            model=MODELO_QWEN, messages=messages, temperature=0.5, max_tokens=1500
         )
         texto_qwen = resp_qwen.choices[0].message.content
     except Exception as e:
@@ -125,7 +131,7 @@ async def consultar_ensamble(prompt_o_mensajes, es_resumen=False, info_web="") -
 
     try:
         resp_mistral = await mistral_client.chat.completions.create(
-            model=MODELO_MISTRAL, messages=messages, temperature=0.7, max_tokens=600
+            model=MODELO_MISTRAL, messages=messages, temperature=0.7, max_tokens=1500
         )
         texto_mistral = resp_mistral.choices[0].message.content
     except Exception as e:
@@ -143,7 +149,7 @@ async def consultar_ensamble(prompt_o_mensajes, es_resumen=False, info_web="") -
             {"role": "user", "content": f"Opción A:\n{texto_qwen}\n\nOpción B:\n{texto_mistral}\n\nGenera la respuesta final ideal:"}
         ]
         resp_final = await groq_client.chat.completions.create(
-            model=MODELO_JUEZ, messages=prompt_juez, temperature=0.7, max_tokens=1000
+            model=MODELO_JUEZ, messages=prompt_juez, temperature=0.7, max_tokens=1500
         )
         return resp_final.choices[0].message.content
     except Exception as e:
@@ -161,6 +167,9 @@ def parsear_fecha(txt: str) -> Optional[datetime]:
     except: return None
     return None
 
+# ---------------------------------------------------------
+# 🧩 COG INTELIGENCIA ARTIFICIAL Y RESÚMENES
+# ---------------------------------------------------------
 class IA(commands.Cog):
     def __init__(self, bot):
         self.bot = bot
@@ -185,11 +194,14 @@ class IA(commands.Cog):
         if not respuesta.startswith("❌"):
             historial.agregar("assistant", respuesta)
         
-        if len(respuesta) > 2000:
-            respuesta = respuesta[:1990] + "..."
-            
-        await interaction.followup.send(f"🐱 {respuesta}")
+        if len(respuesta) <= 1900:
+            await interaction.followup.send(f"🐱 {respuesta}")
+        else:
+            await interaction.followup.send(f"🐱 {respuesta[:1900]}")
+            for i in range(1900, len(respuesta), 1900):
+                await interaction.channel.send(respuesta[i:i+1900])
 
+    # Grupo Limpiar
     grupo_limpiar = app_commands.Group(name="limpiar", description="Borra la memoria del bot")
 
     @grupo_limpiar.command(name="mi_historial", description="Borra tu conversación personal guardada con la IA")
@@ -203,6 +215,7 @@ class IA(commands.Cog):
         memoria_ia.clear()
         await interaction.response.send_message("🧹 Memoria global de la IA reiniciada para todos los usuarios.")
 
+    # Grupo Resumen
     grupo_resumen = app_commands.Group(name="resumen", description="Resúmenes inteligentes del chat")
 
     async def obtener_resumen(self, interaction: discord.Interaction, titulo: str, limit: int = 1000, after=None, before=None, autor=None):
@@ -225,7 +238,13 @@ class IA(commands.Cog):
 
         resumen_txt = await consultar_ensamble(texto_completo, es_resumen=True)
         resultado = f"📊 **{titulo}**\n\n{resumen_txt}"
-        await interaction.followup.send(resultado[:1990] + "..." if len(resultado) > 2000 else resultado)
+
+        if len(resultado) <= 1900:
+            await interaction.followup.send(resultado)
+        else:
+            await interaction.followup.send(resultado[:1900])
+            for i in range(1900, len(resultado), 1900):
+                await interaction.channel.send(resultado[i:i+1900])
 
     @grupo_resumen.command(name="defecto", description="Resume los últimos 100 mensajes enviados")
     async def res_defecto(self, interaction: discord.Interaction):
