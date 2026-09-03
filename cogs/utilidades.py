@@ -10,21 +10,31 @@ class Utilidades(commands.Cog):
 
     @app_commands.command(name="testear", description="Diagnóstico privado del bot")
     async def testear(self, interaction: discord.Interaction):
-        if interaction.user.id != self.bot.owner_id_custom:
+        owner_id = getattr(self.bot, "owner_id_custom", None)
+        
+        # Validación segura del propietario del bot
+        if owner_id and interaction.user.id != owner_id:
+            return await interaction.response.send_message("❌ Comando no reconocido.", ephemeral=True)
+        elif not owner_id and not await self.bot.is_owner(interaction.user):
             return await interaction.response.send_message("❌ Comando no reconocido.", ephemeral=True)
 
         await interaction.response.defer(ephemeral=True)
         
         latencia = round(self.bot.latency * 1000)
         
+        # Verificación segura de conexión con la Base de Datos
         estado_db = "❌ Desconectado"
-        if self.bot.db:
+        db = getattr(self.bot, "db", None)
+        if db:
             try:
-                self.bot.db.collection("test").document("ping").set({"last_ping": datetime.now(timezone.utc).isoformat()})
+                db.collection("test").document("ping").set(
+                    {"last_ping": datetime.now(timezone.utc).isoformat()}
+                )
                 estado_db = "✅ Operativo (Firebase Firestore)"
             except Exception as e:
                 estado_db = f"❌ Error: {e}"
 
+        # Prueba de conectividad con la API de búsqueda web
         try:
             res_web = await buscar_en_web("Python")
             estado_web = "✅ Operativo (DuckDuckGo)" if res_web and "No se pudo" not in res_web else "⚠️ Sin conexión"
@@ -32,7 +42,7 @@ class Utilidades(commands.Cog):
             estado_web = f"❌ Falla: {e}"
 
         permisos = interaction.app_permissions
-        estado_permisos = "✅ Ok (Gestionar Canales)" if permisos.manage_channels else "❌ Faltan permisos de Administración"
+        estado_permisos = "✅ Ok (Gestionar Canales)" if permisos and permisos.manage_channels else "❌ Faltan permisos requeridos"
 
         embed = discord.Embed(title="🕵️ Diagnóstico Privado - Meowly", color=discord.Color.dark_purple())
         embed.add_field(name="📶 Latencia de Discord", value=f"`{latencia} ms`", inline=True)
@@ -53,7 +63,7 @@ class Utilidades(commands.Cog):
 
         embed.add_field(
             name="🐱 Inteligencia Artificial",
-            value="• `/ia <mensaje>`: Conversa con Meowly (combina Qwen 2.5, Mistral y Groq Llama 3.3). Busca información en la web si detecta preguntas de temas actuales.",
+            value="• `/ia <mensaje>`: Conversa con Meowly (combina Qwen 2.5, Mistral y Groq Llama 3.1). Busca información en la web si detecta preguntas de temas actuales.",
             inline=False
         )
         
@@ -96,7 +106,7 @@ class Utilidades(commands.Cog):
         embed.add_field(
             name="🛠️ Gestión Administrativa",
             value=(
-                "• `/gestionar canales <nombres>`: Crea múltiples canales de texto separados por comas.\n"
+                "• `/gestionar canales <nombres>`: Crea múltiples canales de texto separados por comas (Máx 5).\n"
                 "• `/gestionar categoria <nombre>`: Crea una nueva categoría.\n"
                 "• `/gestionar renombrar <canal> <nuevo_nombre>`: Cambia el nombre de un canal."
             ),
@@ -108,7 +118,7 @@ class Utilidades(commands.Cog):
             value=(
                 "• `/eliminar actual`: Elimina el canal actual.\n"
                 "• `/eliminar especificos`: Menú desplegable para borrar hasta 5 canales.\n"
-                "• `/eliminar masivo <filtro> <cantidad>`: Elimina canales en lote por nombre."
+                "• `/eliminar masivo <filtro> <cantidad>`: Elimina canales en lote por nombre (Máx 100)."
             ),
             inline=False
         )
@@ -119,8 +129,20 @@ class Utilidades(commands.Cog):
     async def on_app_command_error(self, interaction: discord.Interaction, error: app_commands.AppCommandError):
         if isinstance(error, app_commands.MissingPermissions):
             msg = "❌ No tienes los permisos necesarios para ejecutar este comando."
-            if interaction.response.is_done(): await interaction.followup.send(msg)
-            else: await interaction.response.send_message(msg)
+        elif isinstance(error, app_commands.BotMissingPermissions):
+            msg = "❌ El bot no tiene los permisos requeridos para realizar esta acción."
+        elif isinstance(error, app_commands.CommandOnCooldown):
+            msg = f"⏳ Comando en enfriamiento. Inténtalo de nuevo en {error.retry_after:.1f} segundos."
+        else:
+            msg = "❌ Ocurrió un error inesperado al procesar el comando."
+
+        try:
+            if interaction.response.is_done():
+                await interaction.followup.send(msg, ephemeral=True)
+            else:
+                await interaction.response.send_message(msg, ephemeral=True)
+        except Exception:
+            pass
 
 async def setup(bot):
     await bot.add_cog(Utilidades(bot))
