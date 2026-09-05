@@ -12,7 +12,7 @@ class ConfirmarBorradoCanales(discord.ui.View):
 
     async def interaction_check(self, interaction: discord.Interaction) -> bool:
         if interaction.user.id != self.autor_id:
-            await interaction.response.send_message("❌ Solo la persona que ejecutó el comando puede presionar estos botones.", ephemeral=True)
+            await interaction.response.send_message("❌ Solo la persona que ejecutó el comando puede usar estos botones.", ephemeral=True)
             return False
         return True
 
