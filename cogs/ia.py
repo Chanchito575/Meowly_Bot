@@ -14,6 +14,9 @@ import openai
 from groq import AsyncGroq
 
 MAX_USUARIOS_MEMORIA = 100
+MODELO_QWEN = "Qwen/Qwen2.5-Coder-32B-Instruct" 
+MODELO_MISTRAL = "mistral-small-latest"         
+MODELO_JUEZ = "llama-3.1-8b-instant"         
 
 class HistorialIA:
     def __init__(self):
@@ -47,10 +50,6 @@ def obtener_historial_usuario(usuario_id: int) -> HistorialIA:
         memoria_ia[usuario_id] = HistorialIA()
     return memoria_ia[usuario_id]
 
-MODELO_QWEN = "Qwen/Qwen2.5-Coder-32B-Instruct" 
-MODELO_MISTRAL = "mistral-small-latest"         
-MODELO_JUEZ = "llama-3.1-8b-instant"         
-
 def necesita_busqueda(mensaje: str) -> bool:
     palabras_clave = [
         r"\bnoticia", r"\bhoy\b", r"\bactual\b", r"quién es\b", r"qué es\b", 
@@ -79,7 +78,7 @@ def _ejecutar_busqueda_ddg(consulta: str) -> str:
         return "No se pudo realizar la búsqueda web en este momento."
 
 async def buscar_en_web(consulta: str) -> str:
-    loop = asyncio.get_event_loop()
+    loop = asyncio.get_running_loop()
     try:
         return await loop.run_in_executor(None, _ejecutar_busqueda_ddg, consulta)
     except Exception:
@@ -117,7 +116,6 @@ async def enviar_respuesta_larga(interaction: discord.Interaction, texto: str, p
     partes = fragmentar_texto(contenido_completo)
     
     await interaction.followup.send(partes[0])
-    
     for parte in partes[1:]:
         if parte.strip():
             await interaction.followup.send(parte)
@@ -140,17 +138,17 @@ def parsear_fecha(txt: str) -> Optional[datetime]:
 class IA(commands.Cog):
     def __init__(self, bot):
         self.bot = bot
-
-    async def consultar_ensamble(self, prompt_o_mensajes, es_resumen=False, info_web="") -> str:
-        owner_id = getattr(self.bot, 'owner_id_custom', 1122162289206902845)
         
         mistral_key = os.getenv("MISTRAL_API_KEY")
         hf_key = os.getenv("HF_TOKEN")
         groq_key = os.getenv("GROQ_API_KEY")
 
-        mistral_client = openai.AsyncOpenAI(base_url="https://api.mistral.ai/v1/", api_key=mistral_key, timeout=15.0) if mistral_key else None
-        hf_client = openai.AsyncOpenAI(base_url="https://router.huggingface.co/v1/", api_key=hf_key, timeout=15.0) if hf_key else None
-        groq_client = AsyncGroq(api_key=groq_key, timeout=15.0) if groq_key else None
+        self.mistral_client = openai.AsyncOpenAI(base_url="https://api.mistral.ai/v1/", api_key=mistral_key, timeout=15.0) if mistral_key else None
+        self.hf_client = openai.AsyncOpenAI(base_url="https://router.huggingface.co/v1/", api_key=hf_key, timeout=15.0) if hf_key else None
+        self.groq_client = AsyncGroq(api_key=groq_key, timeout=15.0) if groq_key else None
+
+    async def consultar_ensamble(self, prompt_o_mensajes, es_resumen=False, info_web="") -> str:
+        owner_id = getattr(self.bot, 'owner_id_custom', 1122162289206902845)
 
         if es_resumen:
             system_prompt = (
@@ -161,18 +159,18 @@ class IA(commands.Cog):
                 {"role": "system", "content": system_prompt},
                 {"role": "user", "content": f"Resume lo siguiente:\n\n{prompt_o_mensajes}"}
             ]
-            if mistral_client:
+            if self.mistral_client:
                 try:
-                    resp = await mistral_client.chat.completions.create(
+                    resp = await self.mistral_client.chat.completions.create(
                         model=MODELO_MISTRAL, messages=messages, temperature=0.5, max_tokens=1500
                     )
                     return resp.choices[0].message.content
                 except Exception as e:
                     print(f"⚠️ Error en Mistral (Resumen): {e}")
 
-            if hf_client:
+            if self.hf_client:
                 try:
-                    resp = await hf_client.chat.completions.create(
+                    resp = await self.hf_client.chat.completions.create(
                         model=MODELO_QWEN, messages=messages, temperature=0.5, max_tokens=1500
                     )
                     return resp.choices[0].message.content
@@ -195,18 +193,18 @@ class IA(commands.Cog):
         texto_qwen = None
         texto_mistral = None
 
-        if hf_client:
+        if self.hf_client:
             try:
-                resp_qwen = await hf_client.chat.completions.create(
+                resp_qwen = await self.hf_client.chat.completions.create(
                     model=MODELO_QWEN, messages=messages, temperature=0.5, max_tokens=1500
                 )
                 texto_qwen = resp_qwen.choices[0].message.content
             except Exception as e:
                 print(f"⚠️ Fallo Qwen: {e}")
 
-        if mistral_client:
+        if self.mistral_client:
             try:
-                resp_mistral = await mistral_client.chat.completions.create(
+                resp_mistral = await self.mistral_client.chat.completions.create(
                     model=MODELO_MISTRAL, messages=messages, temperature=0.7, max_tokens=1500
                 )
                 texto_mistral = resp_mistral.choices[0].message.content
@@ -219,13 +217,13 @@ class IA(commands.Cog):
         if texto_qwen and not texto_mistral: return texto_qwen
         if texto_mistral and not texto_qwen: return texto_mistral
 
-        if groq_client:
+        if self.groq_client:
             try:
                 prompt_juez = [
                     {"role": "system", "content": f"Eres Meowly. Combina los datos exactos y lógica de la Opción A con la fluidez de la Opción B. Si te preguntan sobre quién te creó, asegúrate de responder que te creó <@{owner_id}>. Usa Markdown."},
                     {"role": "user", "content": f"Opción A:\n{texto_qwen}\n\nOpción B:\n{texto_mistral}\n\nGenera la respuesta final ideal:"}
                 ]
-                resp_final = await groq_client.chat.completions.create(
+                resp_final = await self.groq_client.chat.completions.create(
                     model=MODELO_JUEZ, messages=prompt_juez, temperature=0.7, max_tokens=1500
                 )
                 return resp_final.choices[0].message.content
