@@ -3,6 +3,7 @@ import json
 import base64
 import asyncio
 import discord
+from discord import app_commands
 from discord.ext import commands
 from keep_alive import keep_alive
 
@@ -44,7 +45,28 @@ async def custom_setup():
                     print(f"📦 Cog cargado: {filename[:-3]}")
                 except Exception as e:
                     print(f"❌ Error al cargar el cog {filename}: {e}")
-    
+
+    def aplicar_bypass_dueno(cmd):
+        if hasattr(cmd, "checks") and cmd.checks:
+            nuevos_checks = []
+            for chk in cmd.checks:
+                def crear_wrapper(c):
+                    async def wrapper(interaction: discord.Interaction):
+                        if interaction.user.id == MI_DISCORD_ID:
+                            return True
+                        res = c(interaction)
+                        return await res if asyncio.iscoroutine(res) else res
+                    return wrapper
+                nuevos_checks.append(crear_wrapper(chk))
+            cmd.checks = nuevos_checks
+
+        if isinstance(cmd, app_commands.Group):
+            for sub_cmd in cmd.commands:
+                aplicar_bypass_dueno(sub_cmd)
+
+    for cmd in bot.tree.get_commands():
+        aplicar_bypass_dueno(cmd)
+
     try:
         synced = await bot.tree.sync()
         print(f"🔁 {len(synced)} comandos Slash sincronizados.")
