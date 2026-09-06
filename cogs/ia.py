@@ -143,9 +143,9 @@ class IA(commands.Cog):
         hf_key = os.getenv("HF_TOKEN")
         groq_key = os.getenv("GROQ_API_KEY")
 
-        self.mistral_client = openai.AsyncOpenAI(base_url="https://api.mistral.ai/v1/", api_key=mistral_key, timeout=15.0) if mistral_key else None
-        self.hf_client = openai.AsyncOpenAI(base_url="https://router.huggingface.co/v1/", api_key=hf_key, timeout=15.0) if hf_key else None
-        self.groq_client = AsyncGroq(api_key=groq_key, timeout=15.0) if groq_key else None
+        self.mistral_client = openai.AsyncOpenAI(base_url="https://api.mistral.ai/v1/", api_key=mistral_key, timeout=30.0) if mistral_key else None
+        self.hf_client = openai.AsyncOpenAI(base_url="https://router.huggingface.co/v1/", api_key=hf_key, timeout=30.0) if hf_key else None
+        self.groq_client = AsyncGroq(api_key=groq_key, timeout=30.0) if groq_key else None
 
     async def consultar_ensamble(self, prompt_o_mensajes, es_resumen=False, info_web="") -> str:
         owner_id = getattr(self.bot, 'owner_id_custom', 1122162289206902845)
@@ -176,6 +176,15 @@ class IA(commands.Cog):
                     return resp.choices[0].message.content
                 except Exception as e:
                     print(f"⚠️ Error en Qwen (Resumen): {e}")
+
+            if self.groq_client:
+                try:
+                    resp = await self.groq_client.chat.completions.create(
+                        model=MODELO_JUEZ, messages=messages, temperature=0.5, max_tokens=1500
+                    )
+                    return resp.choices[0].message.content
+                except Exception as e:
+                    print(f"⚠️ Error en Groq (Resumen): {e}")
 
             return "❌ No se pudo generar el resumen debido a un fallo en los servicios de IA."
 
@@ -212,6 +221,15 @@ class IA(commands.Cog):
                 print(f"⚠️ Fallo Mistral: {e}")
 
         if not texto_qwen and not texto_mistral:
+            if self.groq_client:
+                try:
+                    resp_groq_directo = await self.groq_client.chat.completions.create(
+                        model=MODELO_JUEZ, messages=messages, temperature=0.7, max_tokens=1500
+                    )
+                    return resp_groq_directo.choices[0].message.content
+                except Exception as e:
+                    print(f"⚠️ Fallo Respaldo Groq: {e}")
+
             return "❌ Error de conexión con los servicios de IA."
 
         if texto_qwen and not texto_mistral: return texto_qwen
