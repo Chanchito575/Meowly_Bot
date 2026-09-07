@@ -72,17 +72,25 @@ class Utilidades(commands.Cog):
         )
 
         embed.add_field(
+            name="🧹 Moderación de Mensajes",
+            value=(
+                "• `/purge`: Abre un menú desplegable para purgar hasta 100 mensajes (Filtro para solo Bots o Todos). Requiere permiso `Gestionar Mensajes`."
+            ),
+            inline=False
+        )
+
+        embed.add_field(
             name="🎨 Gestor de Fuentes e Identidad Visual (Firebase Cloud)",
             value=(
                 "• `/fuente escanear mensaje <mensaje> <nombre>`: Extrae y guarda una fuente desde un texto.\n"
-                "• `/fuente escanear canal <canal> <nombre>`: Extrae la fuente usada en un canal.\n"
+                "• `/fuente escanear canal <canal> <nombre>`: Extrae la fuente usada en un canal de texto, voz o categoría.\n"
                 "• `/fuente escanear categoria <categoria> <nombre>`: Extrae la fuente de una categoría.\n"
-                "• `/fuente aplicar_canal <canal> <estilo> [emoji]`: Aplica una fuente al canal respetando su texto.\n"
-                "• `/fuente aplicar_renombrar <canal> <estilo> <nuevo_nombre> [emoji]`: Rediseña un canal definiendo texto nuevo en **mayúsculas**.\n"
-                "• `/fuente aplicar_categoria <categoria> <estilo> [emoji]`: Aplica estilo a una categoría.\n"
-                "• `/fuente menu_categoria`: Menú interactivo desplegable para editar categorías.\n"
+                "• `/fuente aplicar_canal <canal> <estilo>`: Aplica una fuente al canal manteniendo su nombre.\n"
+                "• `/fuente aplicar_renombrar <canal> <estilo> <nuevo_nombre>`: Rediseña un canal definiendo texto nuevo.\n"
+                "• `/fuente aplicar_categoria <categoria> <estilo>`: Aplica estilo a una categoría.\n"
+                "• `/fuente menu_interactivo`: Despliega un menú interactivo para seleccionar y editar tipografías.\n"
                 "• `/fuente listar`: Lista las fuentes registradas en la nube del servidor.\n"
-                "• `/fuente probar <texto> <estilo> [emoji]`: Genera vista previa de una fuente.\n"
+                "• `/fuente probar <texto> <estilo>`: Genera vista previa de una fuente.\n"
                 "• `/fuente eliminar <nombre>`: Elimina una fuente registrada."
             ),
             inline=False
@@ -113,11 +121,11 @@ class Utilidades(commands.Cog):
         )
 
         embed.add_field(
-            name="🗑️ Limpieza y Purga de Canales",
+            name="🗑️ Eliminación de Canales",
             value=(
                 "• `/eliminar actual`: Elimina el canal donde ejecutas el comando.\n"
                 "• `/eliminar especificos`: Despliega un menú interactivo para seleccionar hasta 5 canales.\n"
-                "• `/eliminar masivo <filtro> <cantidad>`: Purga masiva de canales por coincidencia de nombre (Máx 100)."
+                "• `/eliminar masivo <filtro> <cantidad>`: Eliminación masiva de canales por coincidencia de nombre (Máx 100)."
             ),
             inline=False
         )
