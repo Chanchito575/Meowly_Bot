@@ -4,6 +4,74 @@ import discord
 from discord import app_commands
 from discord.ext import commands
 
+class PurgeModal(discord.ui.Modal, title="Cantidad de Mensajes"):
+    cantidad_input = discord.ui.TextInput(
+        label="Cantidad a eliminar (Máximo 100)",
+        placeholder="Ejemplo: 25",
+        min_length=1,
+        max_length=3,
+        required=True
+    )
+
+    def __init__(self, tipo_purge: str, autor_id: int):
+        super().__init__()
+        self.tipo_purge = tipo_purge
+        self.autor_id = autor_id
+
+    async def on_submit(self, interaction: discord.Interaction):
+        try:
+            cantidad = int(self.cantidad_input.value)
+            if cantidad < 1 or cantidad > 100:
+                return await interaction.response.send_message("❌ La cantidad debe estar entre 1 y 100.", ephemeral=True)
+        except ValueError:
+            return await interaction.response.send_message("❌ Ingresa un número entero válido.", ephemeral=True)
+
+        await interaction.response.defer(ephemeral=True)
+
+        check_func = (lambda m: m.author.bot) if self.tipo_purge == "bots" else None
+
+        try:
+            await interaction.channel.purge(limit=cantidad, check=check_func)
+            await interaction.followup.send("✅", ephemeral=True)
+        except discord.Forbidden:
+            await interaction.followup.send("❌ No tengo el permiso 'Gestionar Mensajes' en este canal.", ephemeral=True)
+        except discord.HTTPException as e:
+            await interaction.followup.send(f"❌ Error al eliminar mensajes: {e}", ephemeral=True)
+
+
+class PurgeSelectView(discord.ui.View):
+    def __init__(self, autor_id: int):
+        super().__init__(timeout=60)
+        self.autor_id = autor_id
+
+    async def interaction_check(self, interaction: discord.Interaction) -> bool:
+        if interaction.user.id != self.autor_id:
+            await interaction.response.send_message("❌ Solo la persona que ejecutó el comando puede usar este menú.", ephemeral=True)
+            return False
+        return True
+
+    @discord.ui.select(
+        placeholder="🧹 Selecciona qué tipo de mensajes borrar",
+        options=[
+            discord.SelectOption(
+                label="Mensajes de Bots", 
+                value="bots", 
+                description="Elimina únicamente los mensajes enviados por bots", 
+                emoji="🤖"
+            ),
+            discord.SelectOption(
+                label="Todos los Mensajes", 
+                value="todos", 
+                description="Elimina mensajes de usuarios y bots", 
+                emoji="💬"
+            )
+        ]
+    )
+    async def select_callback(self, interaction: discord.Interaction, select: discord.ui.Select):
+        modal = PurgeModal(tipo_purge=select.values[0], autor_id=self.autor_id)
+        await interaction.response.send_modal(modal)
+
+
 class ConfirmarBorradoCanales(discord.ui.View):
     def __init__(self, canales: List[discord.abc.GuildChannel], autor_id: int):
         super().__init__(timeout=45)
@@ -78,6 +146,12 @@ class SelectEliminarView(discord.ui.View):
 class Gestion(commands.Cog):
     def __init__(self, bot):
         self.bot = bot
+
+    @app_commands.command(name="purge", description="Elimina mensajes del canal mediante un menú interactivo")
+    @app_commands.checks.has_permissions(manage_messages=True)
+    async def purge(self, interaction: discord.Interaction):
+        view = PurgeSelectView(autor_id=interaction.user.id)
+        await interaction.response.send_message("🧹 **Control de Purga:** Selecciona una opción del menú:", view=view, ephemeral=True)
 
     grupo_gestionar = app_commands.Group(name="gestionar", description="Gestión del servidor")
 
