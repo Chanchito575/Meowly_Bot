@@ -36,7 +36,6 @@ SMALL_CAPS_MAP = {
     'ꜱ':'s','ᴛ':'t','ᴜ':'u','ᴠ':'v','ᴡ':'w','x':'x','ʏ':'y','ᴢ':'z'
 }
 
-
 def generar_bloque_completo(char_muestra: str) -> dict:
     code = ord(char_muestra)
     mapeo = {}
@@ -57,8 +56,7 @@ def generar_bloque_completo(char_muestra: str) -> dict:
             return mapeo
     return {}
 
-
-class VistaAplicarCategoria(discord.ui.View):
+class VistaAplicarElemento(discord.ui.View):
     def __init__(self, cog, guild_id: int, fuentes: dict):
         super().__init__(timeout=120)
         self.cog = cog
@@ -78,46 +76,50 @@ class VistaAplicarCategoria(discord.ui.View):
         self.select_estilo.callback = self.callback_estilo
         self.add_item(self.select_estilo)
 
-        self.select_categoria = discord.ui.ChannelSelect(
-            placeholder="📁 Selecciona la categoría a modificar",
-            channel_types=[discord.ChannelType.category],
-            custom_id="select_categoria"
+        self.select_canal = discord.ui.ChannelSelect(
+            placeholder="📁 Selecciona canal (Texto, Voz o Categoría)",
+            channel_types=[
+                discord.ChannelType.text,
+                discord.ChannelType.voice,
+                discord.ChannelType.category
+            ],
+            custom_id="select_canal"
         )
-        self.select_categoria.callback = self.callback_categoria
-        self.add_item(self.select_categoria)
+        self.select_canal.callback = self.callback_canal
+        self.add_item(self.select_canal)
 
     async def callback_estilo(self, interaction: discord.Interaction):
         self.estilo_seleccionado = self.select_estilo.values[0]
         await interaction.response.defer()
 
-    async def callback_categoria(self, interaction: discord.Interaction):
+    async def callback_canal(self, interaction: discord.Interaction):
         await interaction.response.defer()
         if not self.estilo_seleccionado:
             return await interaction.followup.send("⚠️ Primero selecciona un estilo.", ephemeral=True)
 
-        canal_id = int(self.select_categoria.values[0].id)
-        categoria = interaction.guild.get_channel(canal_id)
+        canal_id = int(self.select_canal.values[0].id)
+        target = interaction.guild.get_channel(canal_id)
 
-        if not categoria:
-            return await interaction.followup.send("❌ Categoría no encontrada.", ephemeral=True)
+        if not target:
+            return await interaction.followup.send("❌ Elemento no encontrado.", ephemeral=True)
 
+        es_cat_o_voz = isinstance(target, (discord.CategoryChannel, discord.VoiceChannel))
         nuevo_nombre = self.cog.construir_nombre_inteligente(
-            texto_original=categoria.name,
+            texto_original=target.name,
             texto_nuevo=None,
             mapeo_fuente=self.fuentes[self.estilo_seleccionado],
-            es_categoria=True
+            es_categoria_o_voz=es_cat_o_voz
         )
 
         try:
-            await categoria.edit(name=nuevo_nombre)
-            await interaction.followup.send(f"🎨 Categoría rediseñada: **{nuevo_nombre}**", ephemeral=True)
+            await target.edit(name=nuevo_nombre)
+            await interaction.followup.send(f"🎨 Elemento rediseñado: **{nuevo_nombre}**", ephemeral=True)
         except discord.Forbidden as e:
             msg = "❌ Sin acceso (50001)." if e.code == 50001 else f"❌ Error de permisos: {e}"
             await interaction.followup.send(msg, ephemeral=True)
         except discord.HTTPException as e:
             msg = "⏳ Límite de Discord alcanzado (2 cambios cada 10 min)." if e.status == 429 else f"❌ Error: {e}"
             await interaction.followup.send(msg, ephemeral=True)
-
 
 class Fuentes(commands.Cog):
     def __init__(self, bot):
@@ -212,29 +214,23 @@ class Fuentes(commands.Cog):
             else: res.append(char)
         return "".join(res)
 
-    def construir_nombre_inteligente(self, texto_original: str, texto_nuevo: str, mapeo_fuente: dict, emoji_opcional: str = None, es_categoria: bool = False) -> str:
+    def construir_nombre_inteligente(self, texto_original: str, texto_nuevo: str, mapeo_fuente: dict, es_categoria_o_voz: bool = False) -> str:
         base_texto = texto_nuevo if texto_nuevo else texto_original
         texto_limpio = self.desestilizar_texto(base_texto)
         
-        emojis_encontrados = EMOJI_REGEX.findall(texto_limpio)
-        texto_sin_emojis = EMOJI_REGEX.sub("", texto_limpio)
+        resultado = []
+        pos = 0
+        for match in EMOJI_REGEX.finditer(texto_limpio):
+            start, end = match.span()
+            if start > pos:
+                resultado.append(self.aplicar_mapeo(texto_limpio[pos:start], mapeo_fuente))
+            resultado.append(match.group(0))
+            pos = end
+        if pos < len(texto_limpio):
+            resultado.append(self.aplicar_mapeo(texto_limpio[pos:], mapeo_fuente))
 
-        for sep in ["｜", "│", "|"]:
-            if sep in texto_sin_emojis:
-                texto_sin_emojis = texto_sin_emojis.split(sep)[-1]
-
-        texto_sin_emojis = texto_sin_emojis.replace("-", " ").strip()
-        texto_transformado = self.aplicar_mapeo(texto_sin_emojis, mapeo_fuente)
-
-        if emojis_encontrados:
-            emoji_usar = emojis_encontrados[0]
-            resultado = f"{emoji_usar}｜{texto_transformado}"
-        elif emoji_opcional:
-            resultado = f"{texto_transformado} {emoji_opcional}"
-        else:
-            resultado = texto_transformado
-
-        return resultado if es_categoria else resultado.replace(" ", "-")
+        nombre_final = "".join(resultado)
+        return nombre_final if es_categoria_o_voz else nombre_final.replace(" ", "-")
 
     async def estilo_autocomplete(self, interaction: discord.Interaction, current: str) -> list[app_commands.Choice[str]]:
         if not interaction.guild_id: return []
@@ -307,15 +303,15 @@ class Fuentes(commands.Cog):
         except Exception as e:
             await interaction.followup.send(f"❌ Error al procesar: {e}")
 
-    @grupo_escanear.command(name="canal", description="Extrae e infiere la fuente completa a partir de un canal")
+    @grupo_escanear.command(name="canal", description="Extrae e infiere la fuente completa a partir de un canal de texto o voz")
     @app_commands.checks.has_permissions(manage_channels=True)
-    async def escanear_canal(self, interaction: discord.Interaction, canal: discord.TextChannel, nombre_guardar: str):
+    async def escanear_canal(self, interaction: discord.Interaction, canal: discord.abc.GuildChannel, nombre_guardar: str):
         await interaction.response.defer()
         if not self.bot.db: return await interaction.followup.send("❌ Firebase no disponible.")
         try:
             mapeo = await self.extraer_mapeo_fuente(canal.name)
             if await self.guardar_fuente(interaction.guild_id, nombre_guardar, mapeo):
-                await interaction.followup.send(f"🧠 Fuente guardada desde {canal.mention} como **{nombre_guardar}** ({len(mapeo)} caracteres).")
+                await interaction.followup.send(f"🧠 Fuente guardada desde **{canal.name}** como **{nombre_guardar}** ({len(mapeo)} caracteres).")
             else:
                 await interaction.followup.send("❌ Error al guardar en Firebase.")
         except Exception as e:
@@ -335,10 +331,10 @@ class Fuentes(commands.Cog):
         except Exception as e:
             await interaction.followup.send(f"❌ Error al procesar: {e}")
 
-    @grupo_fuente.command(name="aplicar_canal", description="Aplica una fuente a un canal manteniendo su texto actual")
+    @grupo_fuente.command(name="aplicar_canal", description="Aplica una fuente a un canal (texto o voz) manteniendo su nombre actual")
     @app_commands.checks.has_permissions(manage_channels=True)
     @app_commands.autocomplete(estilo=estilo_autocomplete)
-    async def aplicar_canal_cmd(self, interaction: discord.Interaction, canal: discord.TextChannel, estilo: str, emoji: str = None):
+    async def aplicar_canal_cmd(self, interaction: discord.Interaction, canal: discord.abc.GuildChannel, estilo: str):
         await interaction.response.defer()
         if not self.bot.db: return await interaction.followup.send("❌ Firebase no disponible.")
         
@@ -346,22 +342,23 @@ class Fuentes(commands.Cog):
         if estilo.lower() not in fuentes:
             return await interaction.followup.send(f"❌ Fuente **{estilo}** no encontrada.")
         
-        nuevo_nombre = self.construir_nombre_inteligente(canal.name, None, fuentes[estilo.lower()], emoji, es_categoria=False)
+        es_cat_o_voz = isinstance(canal, (discord.CategoryChannel, discord.VoiceChannel))
+        nuevo_nombre = self.construir_nombre_inteligente(canal.name, None, fuentes[estilo.lower()], es_categoria_o_voz=es_cat_o_voz)
         
         try:
             await canal.edit(name=nuevo_nombre)
-            await interaction.followup.send(f"🎨 Canal rediseñado: {canal.mention}")
+            await interaction.followup.send(f"🎨 Elemento rediseñado: **{nuevo_nombre}**")
         except discord.Forbidden as e:
-            msg = f"❌ **Sin Acceso (50001):** Revisa permisos en {canal.mention}." if e.code == 50001 else f"❌ Sin permisos: {e}"
+            msg = f"❌ **Sin Acceso (50001):** Revisa permisos en **{canal.name}**." if e.code == 50001 else f"❌ Sin permisos: {e}"
             await interaction.followup.send(msg)
         except discord.HTTPException as e:
             msg = "⏳ Límite de Discord (2 cambios cada 10 min)." if e.status == 429 else f"❌ Error de Discord: {e}"
             await interaction.followup.send(msg)
 
-    @grupo_fuente.command(name="aplicar_renombrar", description="Aplica una fuente y cambia el nombre del canal permitiendo mayúsculas")
+    @grupo_fuente.command(name="aplicar_renombrar", description="Aplica una fuente y renombra un canal de texto, voz o categoría")
     @app_commands.checks.has_permissions(manage_channels=True)
     @app_commands.autocomplete(estilo=estilo_autocomplete)
-    async def aplicar_renombrar_cmd(self, interaction: discord.Interaction, canal: discord.TextChannel, estilo: str, nuevo_nombre: str, emoji: str = None):
+    async def aplicar_renombrar_cmd(self, interaction: discord.Interaction, elemento: discord.abc.GuildChannel, estilo: str, nuevo_nombre: str):
         await interaction.response.defer()
         if not self.bot.db: return await interaction.followup.send("❌ Firebase no disponible.")
 
@@ -369,44 +366,22 @@ class Fuentes(commands.Cog):
         if estilo.lower() not in fuentes:
             return await interaction.followup.send(f"❌ Fuente **{estilo}** no encontrada.")
 
-        nombre_final = self.construir_nombre_inteligente(canal.name, nuevo_nombre, fuentes[estilo.lower()], emoji, es_categoria=False)
+        es_cat_o_voz = isinstance(elemento, (discord.CategoryChannel, discord.VoiceChannel))
+        nombre_final = self.construir_nombre_inteligente(elemento.name, nuevo_nombre, fuentes[estilo.lower()], es_categoria_o_voz=es_cat_o_voz)
 
         try:
-            await canal.edit(name=nombre_final)
-            await interaction.followup.send(f"🎨 Canal renombrado y rediseñado: {canal.mention} (`{nombre_final}`)")
+            await elemento.edit(name=nombre_final)
+            await interaction.followup.send(f"🎨 Elemento renombrado y rediseñado: `{nombre_final}`")
         except discord.Forbidden as e:
-            msg = f"❌ **Sin Acceso (50001):** Revisa permisos en {canal.mention}." if e.code == 50001 else f"❌ Sin permisos: {e}"
+            msg = f"❌ **Sin Acceso (50001):** Revisa permisos en **{elemento.name}**." if e.code == 50001 else f"❌ Sin permisos: {e}"
             await interaction.followup.send(msg)
         except discord.HTTPException as e:
             msg = "⏳ Límite de Discord (2 cambios cada 10 min)." if e.status == 429 else f"❌ Error de Discord: {e}"
             await interaction.followup.send(msg)
 
-    @grupo_fuente.command(name="aplicar_categoria", description="Aplica una fuente a una categoría")
+    @grupo_fuente.command(name="menu_interactivo", description="Menú interactivo desplegable para rediseñar canales y categorías")
     @app_commands.checks.has_permissions(manage_channels=True)
-    @app_commands.autocomplete(estilo=estilo_autocomplete)
-    async def aplicar_categoria_cmd(self, interaction: discord.Interaction, categoria: discord.CategoryChannel, estilo: str, emoji: str = None):
-        await interaction.response.defer()
-        if not self.bot.db: return await interaction.followup.send("❌ Firebase no disponible.")
-        
-        fuentes = await self.cargar_fuentes(interaction.guild_id)
-        if estilo.lower() not in fuentes:
-            return await interaction.followup.send(f"❌ Fuente **{estilo}** no encontrada.")
-        
-        nuevo_nombre = self.construir_nombre_inteligente(categoria.name, None, fuentes[estilo.lower()], emoji, es_categoria=True)
-        
-        try:
-            await categoria.edit(name=nuevo_nombre)
-            await interaction.followup.send(f"🎨 Categoría rediseñada: **{nuevo_nombre}**")
-        except discord.Forbidden as e:
-            msg = f"❌ Sin acceso a **{categoria.name}**." if e.code == 50001 else f"❌ Permisos insuficientes: {e}"
-            await interaction.followup.send(msg)
-        except discord.HTTPException as e:
-            msg = "⏳ Límite de Discord (2 cambios cada 10 min)." if e.status == 429 else f"❌ Error de Discord: {e}"
-            await interaction.followup.send(msg)
-
-    @grupo_fuente.command(name="menu_categoria", description="Menú interactivo desplegable para editar categorías")
-    @app_commands.checks.has_permissions(manage_channels=True)
-    async def menu_categoria_cmd(self, interaction: discord.Interaction):
+    async def menu_interactivo_cmd(self, interaction: discord.Interaction):
         if not self.bot.db: return await interaction.response.send_message("❌ Firebase no disponible.", ephemeral=True)
         await interaction.response.defer(ephemeral=True)
         
@@ -414,10 +389,10 @@ class Fuentes(commands.Cog):
         if not fuentes:
             return await interaction.followup.send("📂 No hay tipografías guardadas.", ephemeral=True)
 
-        vista = VistaAplicarCategoria(self, interaction.guild_id, fuentes)
+        vista = VistaAplicarElemento(self, interaction.guild_id, fuentes)
         embed = discord.Embed(
-            title="🛠️ Panel de Rediseño de Categorías",
-            description="Elige un estilo y selecciona la categoría en los menús desplegables.",
+            title="🛠️ Panel de Rediseño de Canales y Categorías",
+            description="Selecciona un estilo y el canal/categoría a modificar mediante los menús desplegables.",
             color=discord.Color.blurple()
         )
         await interaction.followup.send(embed=embed, view=vista, ephemeral=True)
@@ -433,20 +408,20 @@ class Fuentes(commands.Cog):
         
         embed = discord.Embed(title="🎨 Tipografías Registradas", color=discord.Color.blue())
         for nombre, mapeo in fuentes.items():
-            ejemplo = self.construir_nombre_inteligente("canal-pruebas", None, mapeo, es_categoria=False)
+            ejemplo = self.construir_nombre_inteligente("canal-pruebas", None, mapeo, es_categoria_o_voz=False)
             embed.add_field(name=f"📌 {nombre.capitalize()}", value=f"`{ejemplo}` ({len(mapeo)} chars)", inline=False)
         
         await interaction.followup.send(embed=embed, ephemeral=True)
 
     @grupo_fuente.command(name="probar", description="Muestra una vista previa de una fuente")
     @app_commands.autocomplete(estilo=estilo_autocomplete)
-    async def probar_fuente(self, interaction: discord.Interaction, texto: str, estilo: str, emoji: str = None):
+    async def probar_fuente(self, interaction: discord.Interaction, texto: str, estilo: str):
         if not self.bot.db: return await interaction.response.send_message("❌ Firebase no disponible.", ephemeral=True)
         fuentes = await self.cargar_fuentes(interaction.guild_id)
         if estilo.lower() not in fuentes:
             return await interaction.response.send_message("❌ Fuente inexistente.", ephemeral=True)
         
-        resultado = self.construir_nombre_inteligente(texto, None, fuentes[estilo.lower()], emoji, es_categoria=False)
+        resultado = self.construir_nombre_inteligente(texto, None, fuentes[estilo.lower()], es_categoria_o_voz=True)
         await interaction.response.send_message(f"👁️ **Vista Previa:** `{resultado}`")
 
     @grupo_fuente.command(name="eliminar", description="Elimina una fuente guardada")
@@ -458,7 +433,6 @@ class Fuentes(commands.Cog):
             await interaction.response.send_message(f"🗑️ Tipografía **{nombre}** eliminada de Firebase.")
         else:
             await interaction.response.send_message(f"❌ No se encontró la fuente **{nombre}**.")
-
 
 async def setup(bot):
     await bot.add_cog(Fuentes(bot))
