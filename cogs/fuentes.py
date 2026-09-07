@@ -95,13 +95,13 @@ class VistaAplicarElemento(discord.ui.View):
     async def callback_canal(self, interaction: discord.Interaction):
         await interaction.response.defer()
         if not self.estilo_seleccionado:
-            return await interaction.followup.send("⚠️ Primero selecciona un estilo.", ephemeral=True)
+            return await interaction.followup.send("⚠️ Primero selecciona un estilo.", ephemeral=False)
 
         canal_id = int(self.select_canal.values[0].id)
         target = interaction.guild.get_channel(canal_id)
 
         if not target:
-            return await interaction.followup.send("❌ Elemento no encontrado.", ephemeral=True)
+            return await interaction.followup.send("❌ Elemento no encontrado.", ephemeral=False)
 
         es_cat_o_voz = isinstance(target, (discord.CategoryChannel, discord.VoiceChannel))
         nuevo_nombre = self.cog.construir_nombre_inteligente(
@@ -113,13 +113,13 @@ class VistaAplicarElemento(discord.ui.View):
 
         try:
             await target.edit(name=nuevo_nombre)
-            await interaction.followup.send(f"🎨 Elemento rediseñado: **{nuevo_nombre}**", ephemeral=True)
+            await interaction.followup.send(f"🎨 Elemento rediseñado: **{nuevo_nombre}**", ephemeral=False)
         except discord.Forbidden as e:
             msg = "❌ Sin acceso (50001)." if e.code == 50001 else f"❌ Error de permisos: {e}"
-            await interaction.followup.send(msg, ephemeral=True)
+            await interaction.followup.send(msg, ephemeral=False)
         except discord.HTTPException as e:
             msg = "⏳ Límite de Discord alcanzado (2 cambios cada 10 min)." if e.status == 429 else f"❌ Error: {e}"
-            await interaction.followup.send(msg, ephemeral=True)
+            await interaction.followup.send(msg, ephemeral=False)
 
 class Fuentes(commands.Cog):
     def __init__(self, bot):
@@ -382,12 +382,12 @@ class Fuentes(commands.Cog):
     @grupo_fuente.command(name="menu_interactivo", description="Menú interactivo desplegable para rediseñar canales y categorías")
     @app_commands.checks.has_permissions(manage_channels=True)
     async def menu_interactivo_cmd(self, interaction: discord.Interaction):
-        if not self.bot.db: return await interaction.response.send_message("❌ Firebase no disponible.", ephemeral=True)
-        await interaction.response.defer(ephemeral=True)
+        if not self.bot.db: return await interaction.response.send_message("❌ Firebase no disponible.")
+        await interaction.response.defer(ephemeral=False)
         
         fuentes = await self.cargar_fuentes(interaction.guild_id)
         if not fuentes:
-            return await interaction.followup.send("📂 No hay tipografías guardadas.", ephemeral=True)
+            return await interaction.followup.send("📂 No hay tipografías guardadas.", ephemeral=False)
 
         vista = VistaAplicarElemento(self, interaction.guild_id, fuentes)
         embed = discord.Embed(
@@ -395,31 +395,31 @@ class Fuentes(commands.Cog):
             description="Selecciona un estilo y el canal/categoría a modificar mediante los menús desplegables.",
             color=discord.Color.blurple()
         )
-        await interaction.followup.send(embed=embed, view=vista, ephemeral=True)
+        await interaction.followup.send(embed=embed, view=vista, ephemeral=False)
 
     @grupo_fuente.command(name="listar", description="Muestra las tipografías guardadas en el servidor")
     async def listar_fuentes(self, interaction: discord.Interaction):
-        if not self.bot.db: return await interaction.response.send_message("❌ Firebase no disponible.", ephemeral=True)
-        await interaction.response.defer(ephemeral=True)
+        if not self.bot.db: return await interaction.response.send_message("❌ Firebase no disponible.")
+        await interaction.response.defer(ephemeral=False)
         
         fuentes = await self.cargar_fuentes(interaction.guild_id)
         if not fuentes:
-            return await interaction.followup.send("📂 No hay tipografías guardadas.", ephemeral=True)
+            return await interaction.followup.send("📂 No hay tipografías guardadas.", ephemeral=False)
         
         embed = discord.Embed(title="🎨 Tipografías Registradas", color=discord.Color.blue())
         for nombre, mapeo in fuentes.items():
             ejemplo = self.construir_nombre_inteligente("canal-pruebas", None, mapeo, es_categoria_o_voz=False)
             embed.add_field(name=f"📌 {nombre.capitalize()}", value=f"`{ejemplo}` ({len(mapeo)} chars)", inline=False)
         
-        await interaction.followup.send(embed=embed, ephemeral=True)
+        await interaction.followup.send(embed=embed, ephemeral=False)
 
     @grupo_fuente.command(name="probar", description="Muestra una vista previa de una fuente")
     @app_commands.autocomplete(estilo=estilo_autocomplete)
     async def probar_fuente(self, interaction: discord.Interaction, texto: str, estilo: str):
-        if not self.bot.db: return await interaction.response.send_message("❌ Firebase no disponible.", ephemeral=True)
+        if not self.bot.db: return await interaction.response.send_message("❌ Firebase no disponible.")
         fuentes = await self.cargar_fuentes(interaction.guild_id)
         if estilo.lower() not in fuentes:
-            return await interaction.response.send_message("❌ Fuente inexistente.", ephemeral=True)
+            return await interaction.response.send_message("❌ Fuente inexistente.")
         
         resultado = self.construir_nombre_inteligente(texto, None, fuentes[estilo.lower()], es_categoria_o_voz=True)
         await interaction.response.send_message(f"👁️ **Vista Previa:** `{resultado}`")
@@ -428,7 +428,7 @@ class Fuentes(commands.Cog):
     @app_commands.checks.has_permissions(manage_channels=True)
     @app_commands.autocomplete(nombre=estilo_autocomplete)
     async def eliminar_fuente_cmd(self, interaction: discord.Interaction, nombre: str):
-        if not self.bot.db: return await interaction.response.send_message("❌ Firebase no disponible.", ephemeral=True)
+        if not self.bot.db: return await interaction.response.send_message("❌ Firebase no disponible.")
         if await self.eliminar_fuente(interaction.guild_id, nombre):
             await interaction.response.send_message(f"🗑️ Tipografía **{nombre}** eliminada de Firebase.")
         else:
