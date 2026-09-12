@@ -1,8 +1,10 @@
+import asyncio
 from datetime import datetime, timezone
 import discord
 from discord import app_commands
 from discord.ext import commands
 from cogs.ia import buscar_en_web
+
 
 class Utilidades(commands.Cog):
     def __init__(self, bot):
@@ -12,7 +14,13 @@ class Utilidades(commands.Cog):
     async def testear(self, interaction: discord.Interaction):
         owner_id = getattr(self.bot, "owner_id_custom", None)
         
-        if (owner_id and interaction.user.id != owner_id) or (not owner_id and not await self.bot.is_owner(interaction.user)):
+        es_dueno = False
+        if owner_id and interaction.user.id == owner_id:
+            es_dueno = True
+        elif await self.bot.is_owner(interaction.user):
+            es_dueno = True
+
+        if not es_dueno:
             return await interaction.response.send_message("❌ Comando no reconocido.", ephemeral=True)
 
         await interaction.response.defer(ephemeral=True)
@@ -23,9 +31,11 @@ class Utilidades(commands.Cog):
         db = getattr(self.bot, "db", None)
         if db:
             try:
-                db.collection("test").document("ping").set(
-                    {"last_ping": datetime.now(timezone.utc).isoformat()}
-                )
+                def _ping_db():
+                    db.collection("test").document("ping").set(
+                        {"last_ping": datetime.now(timezone.utc).isoformat()}
+                    )
+                await asyncio.to_thread(_ping_db)
                 estado_db = "✅ Operativo (Firebase Firestore)"
             except Exception as e:
                 estado_db = f"❌ Error: {e}"
@@ -83,11 +93,10 @@ class Utilidades(commands.Cog):
             name="🎨 Gestor de Fuentes e Identidad Visual (Firebase Cloud)",
             value=(
                 "• `/fuente escanear mensaje <mensaje> <nombre>`: Extrae y guarda una fuente desde un texto.\n"
-                "• `/fuente escanear canal <canal> <nombre>`: Extrae la fuente usada en un canal de texto, voz o categoría.\n"
+                "• `/fuente escanear canal <canal> <nombre>`: Extrae la fuente usada en un canal de texto o voz.\n"
                 "• `/fuente escanear categoria <categoria> <nombre>`: Extrae la fuente de una categoría.\n"
                 "• `/fuente aplicar_canal <canal> <estilo>`: Aplica una fuente al canal manteniendo su nombre.\n"
-                "• `/fuente aplicar_renombrar <canal> <estilo> <nuevo_nombre>`: Rediseña un canal definiendo texto nuevo.\n"
-                "• `/fuente aplicar_categoria <categoria> <estilo>`: Aplica estilo a una categoría.\n"
+                "• `/fuente aplicar_renombrar <elemento> <estilo> <nuevo_nombre>`: Rediseña y renombra un canal o categoría.\n"
                 "• `/fuente menu_interactivo`: Despliega un menú interactivo para seleccionar y editar tipografías.\n"
                 "• `/fuente listar`: Lista las fuentes registradas en la nube del servidor.\n"
                 "• `/fuente probar <texto> <estilo>`: Genera vista previa de una fuente.\n"
@@ -115,7 +124,7 @@ class Utilidades(commands.Cog):
             value=(
                 "• `/gestionar canales <nombres>`: Crea múltiples canales de texto en lote (separados por comas).\n"
                 "• `/gestionar categoria <nombre>`: Crea una nueva categoría de canales.\n"
-                "• `/gestionar renombrar <canal> <nuevo_nombre>`: Cambia el nombre de un canal."
+                "• `/gestionar renombrar <canal> <nuevo_nombre>`: Cambia el nombre de un canal o categoría."
             ),
             inline=False
         )
@@ -123,9 +132,9 @@ class Utilidades(commands.Cog):
         embed.add_field(
             name="🗑️ Eliminación de Canales",
             value=(
-                "• `/eliminar actual`: Elimina el canal donde ejecutas el comando.\n"
-                "• `/eliminar especificos`: Despliega un menú interactivo para seleccionar hasta 5 canales.\n"
-                "• `/eliminar masivo <filtro> <cantidad>`: Eliminación masiva de canales por coincidencia de nombre (Máx 100)."
+                "• `/gestionar eliminar actual`: Elimina el canal donde ejecutas el comando.\n"
+                "• `/gestionar eliminar especificos`: Despliega un menú interactivo para seleccionar hasta 5 canales.\n"
+                "• `/gestionar eliminar masivo <filtro> <cantidad>`: Eliminación masiva de canales por coincidencia de nombre (Máx 100)."
             ),
             inline=False
         )
@@ -149,6 +158,7 @@ class Utilidades(commands.Cog):
                 await interaction.response.send_message(msg, ephemeral=True)
         except Exception:
             pass
+
 
 async def setup(bot):
     await bot.add_cog(Utilidades(bot))
