@@ -239,7 +239,6 @@ class IA(commands.Cog):
         else:
             messages = base_messages + list(prompt_o_mensajes)
 
-        # Consultas concurrentes en paralelo a los dos proveedores para reducir latencia
         resultados = await asyncio.gather(
             self._consultar_qwen(messages),
             self._consultar_mistral(messages),
@@ -307,13 +306,13 @@ class IA(commands.Cog):
     async def limpiar_mi_historial(self, interaction: discord.Interaction):
         historial = obtener_historial_usuario(interaction.user.id)
         historial.limpiar()
-        await interaction.response.send_message(f"🧹 El historial de IA de {interaction.user.mention} ha sido borrado.", ephemeral=True)
+        await interaction.response.send_message(f"🧹 El historial de IA de {interaction.user.mention} ha sido borrado.")
 
     @grupo_limpiar.command(name="todo", description="Borra todo el historial de la IA de todos los usuarios")
     @app_commands.checks.has_permissions(administrator=True)
     async def limpiar_todo(self, interaction: discord.Interaction):
         memoria_ia.clear()
-        await interaction.response.send_message("🧹 Memoria global de la IA reiniciada para todos los usuarios.", ephemeral=True)
+        await interaction.response.send_message("🧹 Memoria global de la IA reiniciada para todos los usuarios.")
 
     grupo_resumen = app_commands.Group(name="resumen", description="Resúmenes inteligentes del chat")
 
@@ -364,7 +363,7 @@ class IA(commands.Cog):
     async def res_dia(self, interaction: discord.Interaction, fecha: str):
         dt = parsear_fecha(fecha)
         if not dt:
-            return await interaction.response.send_message("❌ Fecha inválida. Usa `DD/MM`.", ephemeral=True)
+            return await interaction.response.send_message("❌ Fecha inválida. Usa `DD/MM`.")
         dt_fin = dt.replace(hour=23, minute=59, second=59)
         await self.obtener_resumen(interaction, f"Resumen del Día ({fecha})", after=dt, before=dt_fin)
 
@@ -374,7 +373,7 @@ class IA(commands.Cog):
         dt_ini = parsear_fecha(fecha_inicio)
         dt_fin = parsear_fecha(fecha_fin)
         if not dt_ini or not dt_fin:
-            return await interaction.response.send_message("❌ Formato inválido. Usa `DD/MM`.", ephemeral=True)
+            return await interaction.response.send_message("❌ Formato inválido. Usa `DD/MM`.")
         dt_fin = dt_fin.replace(hour=23, minute=59, second=59)
         await self.obtener_resumen(interaction, f"Resumen entre {fecha_inicio} y {fecha_fin}", after=dt_ini, before=dt_fin)
 
@@ -382,14 +381,14 @@ class IA(commands.Cog):
     @app_commands.guild_only()
     async def res_mensajes(self, interaction: discord.Interaction, cantidad: int):
         if cantidad < 1 or cantidad > 1000:
-            return await interaction.response.send_message("❌ La cantidad debe estar entre 1 y 1000.", ephemeral=True)
+            return await interaction.response.send_message("❌ La cantidad debe estar entre 1 y 1000.")
         await self.obtener_resumen(interaction, f"Resumen de {cantidad} mensajes", limit=cantidad)
 
     @grupo_resumen.command(name="tiempo", description="Resume la actividad del chat de las últimas N horas")
     @app_commands.guild_only()
     async def res_tiempo(self, interaction: discord.Interaction, horas: int):
         if horas < 1 or horas > 168:
-            return await interaction.response.send_message("❌ Ingresa un número razonable de horas (1-168).", ephemeral=True)
+            return await interaction.response.send_message("❌ Ingresa un número razonable de horas (1-168).")
         after_dt = datetime.now(timezone.utc) - timedelta(hours=horas)
         await self.obtener_resumen(interaction, f"Resumen de las últimas {horas} horas", after=after_dt)
 
@@ -398,7 +397,7 @@ class IA(commands.Cog):
     async def res_persona(self, interaction: discord.Interaction, usuario: discord.Member, fecha: str):
         dt = parsear_fecha(fecha)
         if not dt:
-            return await interaction.response.send_message("❌ Fecha inválida. Usa `DD/MM`.", ephemeral=True)
+            return await interaction.response.send_message("❌ Fecha inválida. Usa `DD/MM`.")
         dt_fin = dt.replace(hour=23, minute=59, second=59)
         await self.obtener_resumen(interaction, f"Actividad de {usuario.display_name} el {fecha}", after=dt, before=dt_fin, autor=usuario)
 
