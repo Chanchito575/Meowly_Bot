@@ -18,26 +18,29 @@ MODELO_QWEN = "Qwen/Qwen2.5-Coder-32B-Instruct"
 MODELO_MISTRAL = "mistral-small-latest"         
 MODELO_JUEZ = "llama-3.1-8b-instant"         
 
+
 class HistorialIA:
     def __init__(self):
         self.mensajes = collections.deque(maxlen=15)
         self.ultimo_uso = datetime.now(timezone.utc)
 
-    def actualizar_y_obtener(self):
+    def actualizar_y_obtener(self) -> List[dict]:
         ahora = datetime.now(timezone.utc)
         if (ahora - self.ultimo_uso) > timedelta(minutes=45):
             self.mensajes.clear()
         self.ultimo_uso = ahora
         return list(self.mensajes)
 
-    def agregar(self, rol, contenido):
+    def agregar(self, rol: str, contenido: str):
         self.mensajes.append({"role": rol, "content": contenido})
         self.ultimo_uso = datetime.now(timezone.utc)
 
     def limpiar(self):
         self.mensajes.clear()
 
+
 memoria_ia: dict[int, HistorialIA] = {}
+
 
 def obtener_historial_usuario(usuario_id: int) -> HistorialIA:
     if len(memoria_ia) > MAX_USUARIOS_MEMORIA:
@@ -50,14 +53,16 @@ def obtener_historial_usuario(usuario_id: int) -> HistorialIA:
         memoria_ia[usuario_id] = HistorialIA()
     return memoria_ia[usuario_id]
 
+
 def necesita_busqueda(mensaje: str) -> bool:
     palabras_clave = [
-        r"\bnoticia", r"\bhoy\b", r"\bactual\b", r"quién es\b", r"qué es\b", 
-        r"cuánto\b", r"\bprecio", r"\bclima", r"\bresultado", r"\binvestiga\b", 
+        r"\bnoticia", r"\bhoy\b", r"\bactual\b", r"\bquién es\b", r"\bqué es\b", 
+        r"\bcuánto\b", r"\bprecio", r"\bclima", r"\bresultado", r"\binvestiga\b", 
         r"\b2025\b", r"\b2026\b"
     ]
     msg_lower = mensaje.lower()
     return any(re.search(p, msg_lower) for p in palabras_clave)
+
 
 def _ejecutar_busqueda_ddg(consulta: str) -> str:
     try:
@@ -77,6 +82,7 @@ def _ejecutar_busqueda_ddg(consulta: str) -> str:
         print(f"⚠️ Error en DuckDuckGo Search: {e}")
         return "No se pudo realizar la búsqueda web en este momento."
 
+
 async def buscar_en_web(consulta: str) -> str:
     loop = asyncio.get_running_loop()
     try:
@@ -84,7 +90,10 @@ async def buscar_en_web(consulta: str) -> str:
     except Exception:
         return ""
 
+
 def fragmentar_texto(texto: str, max_longitud: int = 1900) -> List[str]:
+    if not texto:
+        return [""]
     if len(texto) <= max_longitud:
         return [texto]
     
@@ -111,6 +120,7 @@ def fragmentar_texto(texto: str, max_longitud: int = 1900) -> List[str]:
         
     return fragmentos
 
+
 async def enviar_respuesta_larga(interaction: discord.Interaction, texto: str, prefijo: str = ""):
     contenido_completo = f"{prefijo}{texto}" if prefijo else texto
     partes = fragmentar_texto(contenido_completo)
@@ -120,20 +130,23 @@ async def enviar_respuesta_larga(interaction: discord.Interaction, texto: str, p
         if parte.strip():
             await interaction.followup.send(parte)
 
+
 def parsear_fecha(txt: str) -> Optional[datetime]:
     partes = txt.strip().split("/")
     anio_actual = datetime.now(timezone.utc).year
     try:
         if len(partes) == 2:
-            return datetime(anio_actual, int(partes[1]), int(partes[0]), tzinfo=timezone.utc)
+            dia, mes = int(partes[0]), int(partes[1])
+            return datetime(anio_actual, mes, dia, tzinfo=timezone.utc)
         elif len(partes) == 3:
-            a = int(partes[2])
-            if a < 100:
-                a += 2000
-            return datetime(a, int(partes[1]), int(partes[0]), tzinfo=timezone.utc)
-    except Exception:
+            dia, mes, anio = int(partes[0]), int(partes[1]), int(partes[2])
+            if anio < 100:
+                anio += 2000
+            return datetime(anio, mes, dia, tzinfo=timezone.utc)
+    except (ValueError, IndexError):
         return None
     return None
+
 
 class IA(commands.Cog):
     def __init__(self, bot):
@@ -146,6 +159,30 @@ class IA(commands.Cog):
         self.mistral_client = openai.AsyncOpenAI(base_url="https://api.mistral.ai/v1/", api_key=mistral_key, timeout=30.0) if mistral_key else None
         self.hf_client = openai.AsyncOpenAI(base_url="https://router.huggingface.co/v1/", api_key=hf_key, timeout=30.0) if hf_key else None
         self.groq_client = AsyncGroq(api_key=groq_key, timeout=30.0) if groq_key else None
+
+    async def _consultar_qwen(self, messages: list) -> Optional[str]:
+        if not self.hf_client:
+            return None
+        try:
+            resp = await self.hf_client.chat.completions.create(
+                model=MODELO_QWEN, messages=messages, temperature=0.5, max_tokens=1500
+            )
+            return resp.choices[0].message.content
+        except Exception as e:
+            print(f"⚠️ Fallo Qwen: {e}")
+            return None
+
+    async def _consultar_mistral(self, messages: list) -> Optional[str]:
+        if not self.mistral_client:
+            return None
+        try:
+            resp = await self.mistral_client.chat.completions.create(
+                model=MODELO_MISTRAL, messages=messages, temperature=0.7, max_tokens=1500
+            )
+            return resp.choices[0].message.content
+        except Exception as e:
+            print(f"⚠️ Fallo Mistral: {e}")
+            return None
 
     async def consultar_ensamble(self, prompt_o_mensajes, es_resumen=False, info_web="") -> str:
         owner_id = getattr(self.bot, 'owner_id_custom', 1122162289206902845)
@@ -190,36 +227,27 @@ class IA(commands.Cog):
 
         system_instrucciones = (
             "Eres Meowly, un asistente amigable, moderno y carismático para Discord. "
-            f"REGLA DE MENCIONES: Solo menciona a tu creador <@{owner_id}> si el usuario en su mensaje actual te pregunta explícitamente quién te creó o quién es tu creador. "
-            "No agregues pings, frases de despedida, firmas ni coletillas de cortesía innecesarias al final de tus respuestas habituales."
+            f"Si los usuarios te preguntan quién te creó o quién es tu creador, debes responder obligatoriamente indicando que te creó <@{owner_id}>."
         )
         
         base_messages = [{"role": "system", "content": system_instrucciones}]
         if info_web:
             base_messages.append({"role": "user", "content": f"Información web reciente para usar de contexto si es necesario:\n{info_web}\n\n"})
         
-        messages = base_messages + list(prompt_o_mensajes)
+        if isinstance(prompt_o_mensajes, str):
+            messages = base_messages + [{"role": "user", "content": prompt_o_mensajes}]
+        else:
+            messages = base_messages + list(prompt_o_mensajes)
 
-        texto_qwen = None
-        texto_mistral = None
+        # Consultas concurrentes en paralelo a los dos proveedores para reducir latencia
+        resultados = await asyncio.gather(
+            self._consultar_qwen(messages),
+            self._consultar_mistral(messages),
+            return_exceptions=True
+        )
 
-        if self.hf_client:
-            try:
-                resp_qwen = await self.hf_client.chat.completions.create(
-                    model=MODELO_QWEN, messages=messages, temperature=0.5, max_tokens=1500
-                )
-                texto_qwen = resp_qwen.choices[0].message.content
-            except Exception as e:
-                print(f"⚠️ Fallo Qwen: {e}")
-
-        if self.mistral_client:
-            try:
-                resp_mistral = await self.mistral_client.chat.completions.create(
-                    model=MODELO_MISTRAL, messages=messages, temperature=0.7, max_tokens=1500
-                )
-                texto_mistral = resp_mistral.choices[0].message.content
-            except Exception as e:
-                print(f"⚠️ Fallo Mistral: {e}")
+        texto_qwen = resultados[0] if isinstance(resultados[0], str) else None
+        texto_mistral = resultados[1] if isinstance(resultados[1], str) else None
 
         if not texto_qwen and not texto_mistral:
             if self.groq_client:
@@ -239,14 +267,7 @@ class IA(commands.Cog):
         if self.groq_client:
             try:
                 prompt_juez = [
-                    {
-                        "role": "system", 
-                        "content": (
-                            "Eres Meowly. Combina la precisión lógica de la Opción A con la fluidez natural de la Opción B. "
-                            f"Menciona a tu creador <@{owner_id}> ÚNICAMENTE si el usuario preguntó explícitamente quién te creó. "
-                            "No añadas pings no solicitados, frases de despedida ni coletillas finales. Usa Markdown."
-                        )
-                    },
+                    {"role": "system", "content": f"Eres Meowly. Combina los datos exactos y lógica de la Opción A con la fluidez de la Opción B. Si te preguntan sobre quién te creó, asegúrate de responder que te creó <@{owner_id}>. Usa Markdown."},
                     {"role": "user", "content": f"Opción A:\n{texto_qwen}\n\nOpción B:\n{texto_mistral}\n\nGenera la respuesta final ideal:"}
                 ]
                 resp_final = await self.groq_client.chat.completions.create(
@@ -261,7 +282,7 @@ class IA(commands.Cog):
     @app_commands.command(name="ia", description="Habla con Meowly (Ensamble de IAs)")
     @app_commands.describe(mensaje="Tu pregunta o consulta")
     async def ia(self, interaction: discord.Interaction, mensaje: str):
-        await interaction.response.defer(ephemeral=False)
+        await interaction.response.defer()
         
         info_web = ""
         if necesita_busqueda(mensaje):
@@ -298,7 +319,7 @@ class IA(commands.Cog):
 
     async def obtener_resumen(self, interaction: discord.Interaction, titulo: str, limit: int = 1000, after=None, before=None, autor=None):
         if not interaction.response.is_done():
-            await interaction.response.defer(ephemeral=False)
+            await interaction.response.defer()
 
         mensajes_texto = []
         
@@ -328,15 +349,18 @@ class IA(commands.Cog):
         await enviar_respuesta_larga(interaction, resumen_txt, prefijo=f"📊 **{titulo}**\n\n")
 
     @grupo_resumen.command(name="defecto", description="Resume los últimos 100 mensajes enviados")
+    @app_commands.guild_only()
     async def res_defecto(self, interaction: discord.Interaction):
         await self.obtener_resumen(interaction, "Resumen (Últimos 100 mensajes)", limit=100)
 
     @grupo_resumen.command(name="hoy", description="Resume los mensajes enviados el día de hoy")
+    @app_commands.guild_only()
     async def res_hoy(self, interaction: discord.Interaction):
         inicio_hoy = datetime.now(timezone.utc).replace(hour=0, minute=0, second=0, microsecond=0)
         await self.obtener_resumen(interaction, "Resumen de Hoy", after=inicio_hoy)
 
     @grupo_resumen.command(name="dia", description="Resume la conversación de una fecha exacta (DD/MM)")
+    @app_commands.guild_only()
     async def res_dia(self, interaction: discord.Interaction, fecha: str):
         dt = parsear_fecha(fecha)
         if not dt:
@@ -345,6 +369,7 @@ class IA(commands.Cog):
         await self.obtener_resumen(interaction, f"Resumen del Día ({fecha})", after=dt, before=dt_fin)
 
     @grupo_resumen.command(name="rango", description="Resume la actividad entre dos fechas (DD/MM a DD/MM)")
+    @app_commands.guild_only()
     async def res_rango(self, interaction: discord.Interaction, fecha_inicio: str, fecha_fin: str):
         dt_ini = parsear_fecha(fecha_inicio)
         dt_fin = parsear_fecha(fecha_fin)
@@ -354,12 +379,14 @@ class IA(commands.Cog):
         await self.obtener_resumen(interaction, f"Resumen entre {fecha_inicio} y {fecha_fin}", after=dt_ini, before=dt_fin)
 
     @grupo_resumen.command(name="mensajes", description="Resume una cantidad específica de mensajes (hasta 1000)")
+    @app_commands.guild_only()
     async def res_mensajes(self, interaction: discord.Interaction, cantidad: int):
         if cantidad < 1 or cantidad > 1000:
             return await interaction.response.send_message("❌ La cantidad debe estar entre 1 y 1000.", ephemeral=True)
         await self.obtener_resumen(interaction, f"Resumen de {cantidad} mensajes", limit=cantidad)
 
     @grupo_resumen.command(name="tiempo", description="Resume la actividad del chat de las últimas N horas")
+    @app_commands.guild_only()
     async def res_tiempo(self, interaction: discord.Interaction, horas: int):
         if horas < 1 or horas > 168:
             return await interaction.response.send_message("❌ Ingresa un número razonable de horas (1-168).", ephemeral=True)
@@ -367,12 +394,14 @@ class IA(commands.Cog):
         await self.obtener_resumen(interaction, f"Resumen de las últimas {horas} horas", after=after_dt)
 
     @grupo_resumen.command(name="persona", description="Resume la actividad de un usuario en un día específico")
+    @app_commands.guild_only()
     async def res_persona(self, interaction: discord.Interaction, usuario: discord.Member, fecha: str):
         dt = parsear_fecha(fecha)
         if not dt:
             return await interaction.response.send_message("❌ Fecha inválida. Usa `DD/MM`.", ephemeral=True)
         dt_fin = dt.replace(hour=23, minute=59, second=59)
         await self.obtener_resumen(interaction, f"Actividad de {usuario.display_name} el {fecha}", after=dt, before=dt_fin, autor=usuario)
+
 
 async def setup(bot):
     await bot.add_cog(IA(bot))
