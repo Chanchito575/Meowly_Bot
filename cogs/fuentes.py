@@ -90,18 +90,21 @@ class VistaAplicarElemento(discord.ui.View):
 
     async def callback_estilo(self, interaction: discord.Interaction):
         self.estilo_seleccionado = self.select_estilo.values[0]
-        await interaction.response.defer()
+        await interaction.response.send_message(
+            f"✅ Estilo **{self.estilo_seleccionado.capitalize()}** seleccionado. Ahora elige un canal.", 
+            ephemeral=True
+        )
 
     async def callback_canal(self, interaction: discord.Interaction):
-        await interaction.response.defer()
+        await interaction.response.defer(ephemeral=True)
         if not self.estilo_seleccionado:
-            return await interaction.followup.send("⚠️ Primero selecciona un estilo.", ephemeral=False)
+            return await interaction.followup.send("⚠️ Primero selecciona un estilo en el menú superior.", ephemeral=True)
 
         canal_id = int(self.select_canal.values[0].id)
         target = interaction.guild.get_channel(canal_id)
 
         if not target:
-            return await interaction.followup.send("❌ Elemento no encontrado.", ephemeral=False)
+            return await interaction.followup.send("❌ Elemento no encontrado.", ephemeral=True)
 
         es_cat_o_voz = isinstance(target, (discord.CategoryChannel, discord.VoiceChannel))
         nuevo_nombre = self.cog.construir_nombre_inteligente(
@@ -113,13 +116,13 @@ class VistaAplicarElemento(discord.ui.View):
 
         try:
             await target.edit(name=nuevo_nombre)
-            await interaction.followup.send(f"🎨 Elemento rediseñado: **{nuevo_nombre}**", ephemeral=False)
+            await interaction.followup.send(f"🎨 Elemento rediseñado con éxito: **{nuevo_nombre}**", ephemeral=True)
         except discord.Forbidden as e:
             msg = "❌ Sin acceso (50001)." if e.code == 50001 else f"❌ Error de permisos: {e}"
-            await interaction.followup.send(msg, ephemeral=False)
+            await interaction.followup.send(msg, ephemeral=True)
         except discord.HTTPException as e:
             msg = "⏳ Límite de Discord alcanzado (2 cambios cada 10 min)." if e.status == 429 else f"❌ Error: {e}"
-            await interaction.followup.send(msg, ephemeral=False)
+            await interaction.followup.send(msg, ephemeral=True)
 
 class Fuentes(commands.Cog):
     def __init__(self, bot):
@@ -382,12 +385,11 @@ class Fuentes(commands.Cog):
     @grupo_fuente.command(name="menu_interactivo", description="Menú interactivo desplegable para rediseñar canales y categorías")
     @app_commands.checks.has_permissions(manage_channels=True)
     async def menu_interactivo_cmd(self, interaction: discord.Interaction):
-        if not self.bot.db: return await interaction.response.send_message("❌ Firebase no disponible.")
-        await interaction.response.defer(ephemeral=False)
+        if not self.bot.db: return await interaction.response.send_message("❌ Firebase no disponible.", ephemeral=True)
         
         fuentes = await self.cargar_fuentes(interaction.guild_id)
         if not fuentes:
-            return await interaction.followup.send("📂 No hay tipografías guardadas.", ephemeral=False)
+            return await interaction.response.send_message("📂 No hay tipografías guardadas.", ephemeral=True)
 
         vista = VistaAplicarElemento(self, interaction.guild_id, fuentes)
         embed = discord.Embed(
@@ -395,7 +397,7 @@ class Fuentes(commands.Cog):
             description="Selecciona un estilo y el canal/categoría a modificar mediante los menús desplegables.",
             color=discord.Color.blurple()
         )
-        await interaction.followup.send(embed=embed, view=vista, ephemeral=False)
+        await interaction.response.send_message(embed=embed, view=vista, ephemeral=True)
 
     @grupo_fuente.command(name="listar", description="Muestra las tipografías guardadas en el servidor")
     async def listar_fuentes(self, interaction: discord.Interaction):
