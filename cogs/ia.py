@@ -190,7 +190,8 @@ class IA(commands.Cog):
 
         system_instrucciones = (
             "Eres Meowly, un asistente amigable, moderno y carismático para Discord. "
-            f"Si los usuarios te preguntan quién te creó o quién es tu creador, debes responder obligatoriamente indicando que te creó <@{owner_id}>."
+            f"REGLA DE MENCIONES: Solo menciona a tu creador <@{owner_id}> si el usuario en su mensaje actual te pregunta explícitamente quién te creó o quién es tu creador. "
+            "No agregues pings, frases de despedida, firmas ni coletillas de cortesía innecesarias al final de tus respuestas habituales."
         )
         
         base_messages = [{"role": "system", "content": system_instrucciones}]
@@ -238,7 +239,14 @@ class IA(commands.Cog):
         if self.groq_client:
             try:
                 prompt_juez = [
-                    {"role": "system", "content": f"Eres Meowly. Combina los datos exactos y lógica de la Opción A con la fluidez de la Opción B. Si te preguntan sobre quién te creó, asegúrate de responder que te creó <@{owner_id}>. Usa Markdown."},
+                    {
+                        "role": "system", 
+                        "content": (
+                            "Eres Meowly. Combina la precisión lógica de la Opción A con la fluidez natural de la Opción B. "
+                            f"Menciona a tu creador <@{owner_id}> ÚNICAMENTE si el usuario preguntó explícitamente quién te creó. "
+                            "No añadas pings no solicitados, frases de despedida ni coletillas finales. Usa Markdown."
+                        )
+                    },
                     {"role": "user", "content": f"Opción A:\n{texto_qwen}\n\nOpción B:\n{texto_mistral}\n\nGenera la respuesta final ideal:"}
                 ]
                 resp_final = await self.groq_client.chat.completions.create(
@@ -253,7 +261,7 @@ class IA(commands.Cog):
     @app_commands.command(name="ia", description="Habla con Meowly (Ensamble de IAs)")
     @app_commands.describe(mensaje="Tu pregunta o consulta")
     async def ia(self, interaction: discord.Interaction, mensaje: str):
-        await interaction.response.defer()
+        await interaction.response.defer(ephemeral=False)
         
         info_web = ""
         if necesita_busqueda(mensaje):
@@ -290,7 +298,7 @@ class IA(commands.Cog):
 
     async def obtener_resumen(self, interaction: discord.Interaction, titulo: str, limit: int = 1000, after=None, before=None, autor=None):
         if not interaction.response.is_done():
-            await interaction.response.defer()
+            await interaction.response.defer(ephemeral=False)
 
         mensajes_texto = []
         
