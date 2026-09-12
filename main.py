@@ -75,6 +75,21 @@ async def custom_setup():
 
 bot.setup_hook = custom_setup
 
+@bot.tree.error
+async def on_app_command_error(interaction: discord.Interaction, error: app_commands.AppCommandError):
+    if isinstance(error, app_commands.MissingPermissions):
+        msg = "❌ No tienes los permisos requeridos para ejecutar este comando."
+    elif isinstance(error, app_commands.BotMissingPermissions):
+        msg = "❌ El bot no tiene los permisos suficientes en este canal/servidor."
+    else:
+        msg = "❌ Ocurrió un error inesperado al procesar el comando."
+        print(f"⚠️ Error en comando '{interaction.command.name if interaction.command else 'desconocido'}': {error}")
+
+    if interaction.response.is_done():
+        await interaction.followup.send(msg, ephemeral=True)
+    else:
+        await interaction.response.send_message(msg, ephemeral=True)
+
 @bot.event
 async def on_ready():
     actividad = discord.Game(name=f"creado por <@{bot.owner_id_custom}> | /ia")
