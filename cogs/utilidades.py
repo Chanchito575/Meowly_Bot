@@ -12,10 +12,10 @@ class Utilidades(commands.Cog):
 
     @app_commands.command(name="testear", description="Diagnóstico privado del estado del bot")
     async def testear(self, interaction: discord.Interaction):
-        owner_id = getattr(self.bot, "owner_id_custom", None)
+        owner_id = int(getattr(self.bot, "owner_id_custom", 1481047586457518141))
         
         es_dueno = False
-        if owner_id and interaction.user.id == owner_id:
+        if interaction.user.id == owner_id:
             es_dueno = True
         elif await self.bot.is_owner(interaction.user):
             es_dueno = True
@@ -134,12 +134,12 @@ class Utilidades(commands.Cog):
             value=(
                 "• `/gestionar eliminar actual`: Elimina el canal donde ejecutas el comando.\n"
                 "• `/gestionar eliminar especificos`: Despliega un menú interactivo para seleccionar hasta 5 canales.\n"
-                "• `/gestionar eliminar masivo <filtro> <cantidad>`: Eliminación masiva de canales por coincidencia de nombre (Máx 100)."
+                "• `/gestionar eliminar masivo <filtro> <cantidad>`: Eliminación masiva de canales por coincidencia de nombre (Máx 20 por seguridad)."
             ),
             inline=False
         )
 
-        await interaction.response.send_message(embed=embed)
+        await interaction.response.send_message(embed=embed, ephemeral=True)
 
     async def cog_app_command_error(self, interaction: discord.Interaction, error: app_commands.AppCommandError):
         if isinstance(error, app_commands.MissingPermissions):
