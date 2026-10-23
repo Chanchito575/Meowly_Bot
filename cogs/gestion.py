@@ -19,6 +19,9 @@ class PurgeModal(discord.ui.Modal, title="Cantidad de Mensajes"):
         self.autor_id = autor_id
 
     async def on_submit(self, interaction: discord.Interaction):
+        if interaction.user.id != self.autor_id:
+            return await interaction.response.send_message("❌ No estás autorizado para enviar este formulario.", ephemeral=True)
+            
         try:
             cantidad = int(self.cantidad_input.value)
             if cantidad < 1 or cantidad > 100:
@@ -83,13 +86,17 @@ class ConfirmarBorradoCanales(discord.ui.View):
 
     async def interaction_check(self, interaction: discord.Interaction) -> bool:
         if interaction.user.id != self.autor_id:
-            await interaction.response.send_message("❌ Solo la persona que ejecutó el comando puede usar estos botones.", ephemeral=True)
+            await interaction.response.send_message("❌ Solo la persona que ejecutó el comando puede usar estos botones de seguridad.", ephemeral=True)
             return False
         return True
 
-    @discord.ui.button(label="🔴 Seguro", style=discord.ButtonStyle.danger)
+    @discord.ui.button(label="🔴 Seguro (Eliminar)", style=discord.ButtonStyle.danger)
     async def confirm(self, interaction: discord.Interaction, button: discord.ui.Button):
-        await interaction.response.edit_message(content="🗑️ Eliminando canales...", view=None)
+        # Doble verificación de permisos de administrador/gestión antes de ejecutar destrucción
+        if not interaction.permissions.manage_channels:
+            return await interaction.response.edit_message(content="❌ Ya no tienes permisos para realizar esta acción.", view=None)
+
+        await interaction.response.edit_message(content="🗑️ Ejecutando eliminación segura de canales...", view=None)
         
         eliminados = 0
         canal_actual_incluido = interaction.channel in self.canales
@@ -99,23 +106,23 @@ class ConfirmarBorradoCanales(discord.ui.View):
                 try:
                     await c.delete()
                     eliminados += 1
-                    await asyncio.sleep(0.3)
+                    await asyncio.sleep(0.5) # Evita rate-limits severos de Discord
                 except (discord.Forbidden, discord.HTTPException):
                     pass
 
         if canal_actual_incluido:
             try:
-                await interaction.followup.send(f"✅ Se eliminaron {eliminados + 1} canales (incluyendo este).")
+                await interaction.followup.send(f"✅ Se eliminaron {eliminados + 1} canales correctamente.")
                 await asyncio.sleep(1)
                 await interaction.channel.delete()
             except (discord.Forbidden, discord.HTTPException):
                 pass
         else:
-            await interaction.followup.send(f"✅ Se eliminaron {eliminados} canales.")
+            await interaction.followup.send(f"✅ Se eliminaron {eliminados} canales correctamente.")
 
     @discord.ui.button(label="⚪ Cancelar", style=discord.ButtonStyle.secondary)
     async def cancel(self, interaction: discord.Interaction, button: discord.ui.Button):
-        await interaction.response.edit_message(content="❌ Operación cancelada.", view=None)
+        await interaction.response.edit_message(content="❌ Operación de borrado cancelada.", view=None)
 
 
 class SelectEliminarView(discord.ui.View):
@@ -172,10 +179,10 @@ class Gestion(commands.Cog):
     @app_commands.guild_only()
     @app_commands.checks.has_permissions(manage_channels=True)
     async def crear_canales(self, interaction: discord.Interaction, nombres: str, categoria: Optional[discord.CategoryChannel] = None):
-        await interaction.response.defer()
+        await interaction.response.defer(ephemeral=True)
         nombres_list = [n.strip() for n in nombres.split(",") if n.strip()][:5]
         if not nombres_list:
-            return await interaction.followup.send("❌ Debes ingresar al menos un nombre de canal válido.")
+            return await interaction.followup.send("❌ Debes ingresar al menos un nombre de canal válido.", ephemeral=True)
 
         creados = []
         for n in nombres_list:
@@ -183,68 +190,68 @@ class Gestion(commands.Cog):
                 ch = await interaction.guild.create_text_channel(name=n, category=categoria)
                 creados.append(ch.mention)
             except discord.Forbidden:
-                await interaction.followup.send("❌ El bot perdió permisos para continuar creando canales.")
+                await interaction.followup.send("❌ El bot perdió permisos para continuar creando canales.", ephemeral=True)
                 break
             except discord.HTTPException as e:
-                await interaction.followup.send(f"⚠️ Error al crear el canal `{n}`: {e}")
+                await interaction.followup.send(f"⚠️ Error al crear el canal `{n}`: {e}", ephemeral=True)
                 break
 
         if creados:
-            await interaction.followup.send(f"✅ Canales creados con éxito: {', '.join(creados)}")
+            await interaction.followup.send(f"✅ Canales creados con éxito: {', '.join(creados)}", ephemeral=True)
 
     @grupo_gestionar.command(name="categoria", description="Crea una categoría nueva en el servidor")
     @app_commands.guild_only()
     @app_commands.checks.has_permissions(manage_channels=True)
     async def crear_categoria(self, interaction: discord.Interaction, nombre: str):
-        await interaction.response.defer()
+        await interaction.response.defer(ephemeral=True)
         try:
             cat = await interaction.guild.create_category(name=nombre)
-            await interaction.followup.send(f"✅ Categoría **{cat.name}** creada con éxito.")
+            await interaction.followup.send(f"✅ Categoría **{cat.name}** creada con éxito.", ephemeral=True)
         except discord.Forbidden:
-            await interaction.followup.send("❌ El bot no tiene permisos para crear categorías.")
+            await interaction.followup.send("❌ El bot no tiene permisos para crear categorías.", ephemeral=True)
         except Exception as e:
-            await interaction.followup.send(f"❌ Error al crear categoría: {e}")
+            await interaction.followup.send(f"❌ Error al crear categoría: {e}", ephemeral=True)
 
     @grupo_gestionar.command(name="renombrar", description="Cambia el nombre de un canal o categoría")
     @app_commands.guild_only()
     @app_commands.checks.has_permissions(manage_channels=True)
     async def renombrar_canal(self, interaction: discord.Interaction, canal: discord.abc.GuildChannel, nuevo_nombre: str):
-        await interaction.response.defer()
+        await interaction.response.defer(ephemeral=True)
         try:
             es_cat_o_voz = isinstance(canal, (discord.CategoryChannel, discord.VoiceChannel))
             nombre_formateado = nuevo_nombre if es_cat_o_voz else nuevo_nombre.replace(" ", "-")
             await canal.edit(name=nombre_formateado)
             
             mencion = canal.mention if hasattr(canal, "mention") else f"**{canal.name}**"
-            await interaction.followup.send(f"✅ Elemento {mencion} renombrado con éxito a `{nombre_formateado}`.")
+            await interaction.followup.send(f"✅ Elemento {mencion} renombrado con éxito a `{nombre_formateado}`.", ephemeral=True)
         except discord.HTTPException as e:
             if e.status == 429:
-                await interaction.followup.send("⏳ Límite de Discord alcanzado (2 cambios cada 10 minutos por canal).")
+                await interaction.followup.send("⏳ Límite de Discord alcanzado (2 cambios cada 10 minutos por canal).", ephemeral=True)
             else:
-                await interaction.followup.send(f"❌ Error de Discord al renombrar: {e}")
+                await interaction.followup.send(f"❌ Error de Discord al renombrar: {e}", ephemeral=True)
         except Exception as e:
-            await interaction.followup.send(f"❌ Error al renombrar: {e}")
+            await interaction.followup.send(f"❌ Error al renombrar: {e}", ephemeral=True)
 
     @grupo_eliminar.command(name="actual", description="Borra el canal en el que te encuentras")
     @app_commands.guild_only()
     @app_commands.checks.has_permissions(manage_channels=True)
     async def elim_actual(self, interaction: discord.Interaction):
         view = ConfirmarBorradoCanales([interaction.channel], interaction.user.id)
-        await interaction.response.send_message("⚠️ **¿Seguro que quieres eliminar ESTE canal? La acción es irreversible.**", view=view)
+        await interaction.response.send_message("⚠️ **¿Seguro que quieres eliminar ESTE canal? La acción es irreversible.**", view=view, ephemeral=True)
 
     @grupo_eliminar.command(name="especificos", description="Abre un menú interactivo para borrar hasta 5 canales")
     @app_commands.guild_only()
     @app_commands.checks.has_permissions(manage_channels=True)
     async def elim_especificos(self, interaction: discord.Interaction):
         view = SelectEliminarView(interaction.user.id)
-        await interaction.response.send_message("🗑️ **Selecciona los canales a eliminar:**", view=view)
+        await interaction.response.send_message("🗑️ **Selecciona los canales a eliminar:**", view=view, ephemeral=True)
 
     @grupo_eliminar.command(name="masivo", description="Borra en lote los canales cuyo nombre contenga una palabra")
     @app_commands.guild_only()
     @app_commands.checks.has_permissions(manage_channels=True)
     async def elim_masivo(self, interaction: discord.Interaction, filtro: str, cantidad: int):
-        if cantidad > 100:
-            return await interaction.response.send_message("❌ Por seguridad el límite máximo para borrado masivo es de 100 canales.", ephemeral=True)
+        if cantidad > 20: # Reducido drásticamente por seguridad ante raids masivos
+            return await interaction.response.send_message("❌ Por seguridad estricta, el límite máximo para borrado masivo por filtro es de 20 canales.", ephemeral=True)
         
         canales_coincidentes = [c for c in interaction.guild.channels if filtro.lower() in c.name.lower()][:cantidad]
         
@@ -252,7 +259,7 @@ class Gestion(commands.Cog):
             return await interaction.response.send_message(f"❌ No se encontró ningún canal cuyo nombre contenga `{filtro}`.", ephemeral=True)
             
         view = ConfirmarBorradoCanales(canales_coincidentes, interaction.user.id)
-        await interaction.response.send_message(f"⚠️ **¿Seguro que quieres eliminar {len(canales_coincidentes)} canales que contienen `{filtro}` en su nombre?**", view=view)
+        await interaction.response.send_message(f"⚠️ **¿Seguro que quieres eliminar {len(canales_coincidentes)} canales que contienen `{filtro}` en su nombre?**", view=view, ephemeral=True)
 
 
 async def setup(bot):
