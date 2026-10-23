@@ -23,35 +23,41 @@ class HistorialIA:
     def __init__(self):
         self.mensajes = collections.deque(maxlen=15)
         self.ultimo_uso = datetime.now(timezone.utc)
+        self.lock = asyncio.Lock()
 
-    def actualizar_y_obtener(self) -> List[dict]:
-        ahora = datetime.now(timezone.utc)
-        if (ahora - self.ultimo_uso) > timedelta(minutes=45):
+    async def actualizar_y_obtener(self) -> List[dict]:
+        async with self.lock:
+            ahora = datetime.now(timezone.utc)
+            if (ahora - self.ultimo_uso) > timedelta(minutes=45):
+                self.mensajes.clear()
+            self.ultimo_uso = ahora
+            return list(self.mensajes)
+
+    async def agregar(self, rol: str, contenido: str):
+        async with self.lock:
+            self.mensajes.append({"role": rol, "content": contenido})
+            self.ultimo_uso = datetime.now(timezone.utc)
+
+    async def limpiar(self):
+        async with self.lock:
             self.mensajes.clear()
-        self.ultimo_uso = ahora
-        return list(self.mensajes)
-
-    def agregar(self, rol: str, contenido: str):
-        self.mensajes.append({"role": rol, "content": contenido})
-        self.ultimo_uso = datetime.now(timezone.utc)
-
-    def limpiar(self):
-        self.mensajes.clear()
 
 
 memoria_ia: dict[int, HistorialIA] = {}
+memoria_lock = asyncio.Lock()
 
 
-def obtener_historial_usuario(usuario_id: int) -> HistorialIA:
-    if len(memoria_ia) > MAX_USUARIOS_MEMORIA:
-        ahora = datetime.now(timezone.utc)
-        inactivos = [uid for uid, h in memoria_ia.items() if (ahora - h.ultimo_uso) > timedelta(minutes=45)]
-        for uid in inactivos:
-            del memoria_ia[uid]
+async def obtener_historial_usuario(usuario_id: int) -> HistorialIA:
+    async with memoria_lock:
+        if len(memoria_ia) > MAX_USUARIOS_MEMORIA:
+            ahora = datetime.now(timezone.utc)
+            inactivos = [uid for uid, h in memoria_ia.items() if (ahora - h.ultimo_uso) > timedelta(minutes=45)]
+            for uid in inactivos:
+                del memoria_ia[uid]
 
-    if usuario_id not in memoria_ia:
-        memoria_ia[usuario_id] = HistorialIA()
-    return memoria_ia[usuario_id]
+        if usuario_id not in memoria_ia:
+            memoria_ia[usuario_id] = HistorialIA()
+        return memoria_ia[usuario_id]
 
 
 def necesita_busqueda(mensaje: str) -> bool:
@@ -185,7 +191,7 @@ class IA(commands.Cog):
             return None
 
     async def consultar_ensamble(self, prompt_o_mensajes, es_resumen=False, info_web="") -> str:
-        owner_id = getattr(self.bot, 'owner_id_custom', 1122162289206902845)
+        owner_id = getattr(self.bot, 'owner_id_custom', 1481047586457518141)
 
         if es_resumen:
             system_prompt = (
@@ -288,15 +294,15 @@ class IA(commands.Cog):
             info_web = await buscar_en_web(mensaje)
             
         usuario_id = interaction.user.id
-        historial = obtener_historial_usuario(usuario_id)
+        historial = await obtener_historial_usuario(usuario_id)
         
-        historial.agregar("user", mensaje)
-        contexto = historial.actualizar_y_obtener()
+        await historial.agregar("user", mensaje)
+        contexto = await historial.actualizar_y_obtener()
         
         respuesta = await self.consultar_ensamble(contexto, es_resumen=False, info_web=info_web)
         
         if not respuesta.startswith("❌"):
-            historial.agregar("assistant", respuesta)
+            await historial.agregar("assistant", respuesta)
         
         await enviar_respuesta_larga(interaction, respuesta, prefijo="🐱 ")
 
@@ -304,15 +310,16 @@ class IA(commands.Cog):
 
     @grupo_limpiar.command(name="mi_historial", description="Borra tu conversación personal guardada con la IA")
     async def limpiar_mi_historial(self, interaction: discord.Interaction):
-        historial = obtener_historial_usuario(interaction.user.id)
-        historial.limpiar()
-        await interaction.response.send_message(f"🧹 El historial de IA de {interaction.user.mention} ha sido borrado.")
+        historial = await obtener_historial_usuario(interaction.user.id)
+        await historial.limpiar()
+        await interaction.response.send_message(f"🧹 El historial de IA de {interaction.user.mention} ha sido borrado.", ephemeral=True)
 
     @grupo_limpiar.command(name="todo", description="Borra todo el historial de la IA de todos los usuarios")
     @app_commands.checks.has_permissions(administrator=True)
     async def limpiar_todo(self, interaction: discord.Interaction):
-        memoria_ia.clear()
-        await interaction.response.send_message("🧹 Memoria global de la IA reiniciada para todos los usuarios.")
+        async with memoria_lock:
+            memoria_ia.clear()
+        await interaction.response.send_message("🧹 Memoria global de la IA reiniciada para todos los usuarios.", ephemeral=True)
 
     grupo_resumen = app_commands.Group(name="resumen", description="Resúmenes inteligentes del chat")
 
@@ -332,12 +339,12 @@ class IA(commands.Cog):
                 fecha_str = msg.created_at.strftime("%d/%m")
                 mensajes_texto.append(f"[{fecha_str}] {msg.author.display_name}: {msg.content}")
         except discord.Forbidden:
-            return await interaction.followup.send("❌ El bot no tiene permiso para leer el historial de este canal.")
+            return await interaction.followup.send("❌ El bot no tiene permiso para leer el historial de este canal.", ephemeral=True)
         except Exception as e:
-            return await interaction.followup.send(f"❌ Error al leer el historial: {e}")
+            return await interaction.followup.send(f"❌ Error al leer el historial: {e}", ephemeral=True)
 
         if not mensajes_texto:
-            return await interaction.followup.send(f"📌 **{titulo}**\n*Sin actividad o mensajes registrados que coincidan.*")
+            return await interaction.followup.send(f"📌 **{titulo}**\n*Sin actividad o mensajes registrados que coincidan.*", ephemeral=True)
 
         texto_completo = "\n".join(mensajes_texto)
         palabras = texto_completo.split()
@@ -363,7 +370,7 @@ class IA(commands.Cog):
     async def res_dia(self, interaction: discord.Interaction, fecha: str):
         dt = parsear_fecha(fecha)
         if not dt:
-            return await interaction.response.send_message("❌ Fecha inválida. Usa `DD/MM`.")
+            return await interaction.response.send_message("❌ Fecha inválida. Usa `DD/MM`.", ephemeral=True)
         dt_fin = dt.replace(hour=23, minute=59, second=59)
         await self.obtener_resumen(interaction, f"Resumen del Día ({fecha})", after=dt, before=dt_fin)
 
@@ -373,7 +380,7 @@ class IA(commands.Cog):
         dt_ini = parsear_fecha(fecha_inicio)
         dt_fin = parsear_fecha(fecha_fin)
         if not dt_ini or not dt_fin:
-            return await interaction.response.send_message("❌ Formato inválido. Usa `DD/MM`.")
+            return await interaction.response.send_message("❌ Formato inválido. Usa `DD/MM`.", ephemeral=True)
         dt_fin = dt_fin.replace(hour=23, minute=59, second=59)
         await self.obtener_resumen(interaction, f"Resumen entre {fecha_inicio} y {fecha_fin}", after=dt_ini, before=dt_fin)
 
@@ -381,14 +388,14 @@ class IA(commands.Cog):
     @app_commands.guild_only()
     async def res_mensajes(self, interaction: discord.Interaction, cantidad: int):
         if cantidad < 1 or cantidad > 1000:
-            return await interaction.response.send_message("❌ La cantidad debe estar entre 1 y 1000.")
+            return await interaction.response.send_message("❌ La cantidad debe estar entre 1 y 1000.", ephemeral=True)
         await self.obtener_resumen(interaction, f"Resumen de {cantidad} mensajes", limit=cantidad)
 
     @grupo_resumen.command(name="tiempo", description="Resume la actividad del chat de las últimas N horas")
     @app_commands.guild_only()
     async def res_tiempo(self, interaction: discord.Interaction, horas: int):
         if horas < 1 or horas > 168:
-            return await interaction.response.send_message("❌ Ingresa un número razonable de horas (1-168).")
+            return await interaction.response.send_message("❌ Ingresa un número razonable de horas (1-168).", ephemeral=True)
         after_dt = datetime.now(timezone.utc) - timedelta(hours=horas)
         await self.obtener_resumen(interaction, f"Resumen de las últimas {horas} horas", after=after_dt)
 
@@ -397,7 +404,7 @@ class IA(commands.Cog):
     async def res_persona(self, interaction: discord.Interaction, usuario: discord.Member, fecha: str):
         dt = parsear_fecha(fecha)
         if not dt:
-            return await interaction.response.send_message("❌ Fecha inválida. Usa `DD/MM`.")
+            return await interaction.response.send_message("❌ Fecha inválida. Usa `DD/MM`.", ephemeral=True)
         dt_fin = dt.replace(hour=23, minute=59, second=59)
         await self.obtener_resumen(interaction, f"Actividad de {usuario.display_name} el {fecha}", after=dt, before=dt_fin, autor=usuario)
 
