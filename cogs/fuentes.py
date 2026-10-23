@@ -148,7 +148,10 @@ class Fuentes(commands.Cog):
         if not self.bot.db or not guild_id: return {}
         def _read():
             doc = self.bot.db.collection("servidores").document(str(guild_id)).get()
-            return doc.to_dict().get("fuentes", {}) if doc and doc.exists else {}
+            if doc and doc.exists:
+                data = doc.to_dict()
+                return data.get("fuentes", {}) if data else {}
+            return {}
         try:
             return await asyncio.to_thread(_read)
         except Exception as e:
@@ -171,9 +174,11 @@ class Fuentes(commands.Cog):
         def _delete():
             doc_ref = self.bot.db.collection("servidores").document(str(guild_id))
             doc = doc_ref.get()
-            if doc.exists and nombre.lower() in doc.to_dict().get("fuentes", {}):
-                doc_ref.update({f"fuentes.{nombre.lower()}": firestore.DELETE_FIELD})
-                return True
+            if doc.exists:
+                data = doc.to_dict()
+                if data and "fuentes" in data and nombre.lower() in data["fuentes"]:
+                    doc_ref.update({f"fuentes.{nombre.lower()}": firestore.DELETE_FIELD})
+                    return True
             return False
         try:
             return await asyncio.to_thread(_delete)
