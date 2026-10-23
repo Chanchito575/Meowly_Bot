@@ -1,9 +1,0 @@
-discord.py
-openai
-groq
-Flask
-aiohttp
-firebase-admin
-duckduckgo_search
-google-cloud-firestore
-grpcio
