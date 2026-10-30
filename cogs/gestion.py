@@ -92,7 +92,6 @@ class ConfirmarBorradoCanales(discord.ui.View):
 
     @discord.ui.button(label="🔴 Seguro (Eliminar)", style=discord.ButtonStyle.danger)
     async def confirm(self, interaction: discord.Interaction, button: discord.ui.Button):
-        # CORRECCIÓN DE PERMISOS: Verificamos los permisos del USUARIO que pulsa el botón, no del bot
         if not interaction.user.guild_permissions.manage_channels:
             return await interaction.response.edit_message(content="❌ Ya no tienes permisos para realizar esta acción.", view=None)
 
@@ -106,7 +105,7 @@ class ConfirmarBorradoCanales(discord.ui.View):
                 try:
                     await c.delete()
                     eliminados += 1
-                    await asyncio.sleep(0.5) # Evita rate-limits severos de Discord
+                    await asyncio.sleep(0.5) 
                 except (discord.Forbidden, discord.HTTPException):
                     pass
 
@@ -149,7 +148,6 @@ class SelectEliminarView(discord.ui.View):
 
         canales_obj = []
         for c in self.select.values:
-            # CORRECCIÓN: Se cambió get_channel_or_thread (que no existe en discord.py) por get_thread
             ch = inter.guild.get_channel(c.id) or inter.guild.get_thread(c.id)
             if ch:
                 canales_obj.append(ch)
