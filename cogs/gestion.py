@@ -92,8 +92,8 @@ class ConfirmarBorradoCanales(discord.ui.View):
 
     @discord.ui.button(label="🔴 Seguro (Eliminar)", style=discord.ButtonStyle.danger)
     async def confirm(self, interaction: discord.Interaction, button: discord.ui.Button):
-        # Doble verificación de permisos de administrador/gestión antes de ejecutar destrucción
-        if not interaction.permissions.manage_channels:
+        # CORRECCIÓN DE PERMISOS: Verificamos los permisos del USUARIO que pulsa el botón, no del bot
+        if not interaction.user.guild_permissions.manage_channels:
             return await interaction.response.edit_message(content="❌ Ya no tienes permisos para realizar esta acción.", view=None)
 
         await interaction.response.edit_message(content="🗑️ Ejecutando eliminación segura de canales...", view=None)
@@ -149,7 +149,8 @@ class SelectEliminarView(discord.ui.View):
 
         canales_obj = []
         for c in self.select.values:
-            ch = inter.guild.get_channel(c.id) or inter.guild.get_channel_or_thread(c.id)
+            # CORRECCIÓN: Se cambió get_channel_or_thread (que no existe en discord.py) por get_thread
+            ch = inter.guild.get_channel(c.id) or inter.guild.get_thread(c.id)
             if ch:
                 canales_obj.append(ch)
 
@@ -239,7 +240,7 @@ class Gestion(commands.Cog):
         view = ConfirmarBorradoCanales([interaction.channel], interaction.user.id)
         await interaction.response.send_message("⚠️ **¿Seguro que quieres eliminar ESTE canal? La acción es irreversible.**", view=view, ephemeral=True)
 
-    @grupo_eliminar.command(name="especificos", description="Abre un menú interactivo para borrar hasta 5 canales")
+    @grupo_eliminar.command(name="especificos", description="Absorbe y abre un menú interactivo para borrar hasta 5 canales")
     @app_commands.guild_only()
     @app_commands.checks.has_permissions(manage_channels=True)
     async def elim_especificos(self, interaction: discord.Interaction):
@@ -250,7 +251,7 @@ class Gestion(commands.Cog):
     @app_commands.guild_only()
     @app_commands.checks.has_permissions(manage_channels=True)
     async def elim_masivo(self, interaction: discord.Interaction, filtro: str, cantidad: int):
-        if cantidad > 20: # Reducido drásticamente por seguridad ante raids masivos
+        if cantidad > 20: 
             return await interaction.response.send_message("❌ Por seguridad estricta, el límite máximo para borrado masivo por filtro es de 20 canales.", ephemeral=True)
         
         canales_coincidentes = [c for c in interaction.guild.channels if filtro.lower() in c.name.lower()][:cantidad]
