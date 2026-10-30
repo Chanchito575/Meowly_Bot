@@ -5,10 +5,13 @@ import asyncio
 import discord
 from discord import app_commands
 from discord.ext import commands
+from dotenv import load_dotenv
 from keep_alive import keep_alive
 
 import firebase_admin
 from firebase_admin import credentials, firestore
+
+load_dotenv()
 
 MI_DISCORD_ID = int(os.getenv("OWNER_ID", "1481047586457518141"))
 
@@ -20,7 +23,12 @@ if b64_credentials:
         decoded_json = base64.b64decode(b64_credentials).decode("utf-8")
         cred_dict = json.loads(decoded_json)
         cred = credentials.Certificate(cred_dict)
-        app = firebase_admin.initialize_app(cred)
+        
+        if not firebase_admin._apps:
+            app = firebase_admin.initialize_app(cred)
+        else:
+            app = firebase_admin.get_app()
+            
         db = firestore.client(app=app)
         print("🔥 Firebase Firestore conectado con éxito.")
     except Exception as e:
@@ -31,6 +39,7 @@ else:
 intents = discord.Intents.default()
 intents.message_content = True
 intents.guilds = True
+intents.members = True  
 
 class MiBot(commands.Bot):
     def __init__(self):
@@ -45,7 +54,7 @@ class MiBot(commands.Bot):
     async def setup_hook(self):
         if os.path.exists('./cogs'):
             for filename in os.listdir('./cogs'):
-                if filename.endswith('.py'):
+                if filename.endswith('.py') and not filename.endswith('_2.py'):
                     try:
                         await self.load_extension(f'cogs.{filename[:-3]}')
                         print(f"📦 Cog cargado: {filename[:-3]}")
@@ -60,9 +69,6 @@ class MiBot(commands.Bot):
 
 bot = MiBot()
 
-def es_dueno(interaction: discord.Interaction) -> bool:
-    return interaction.user.id == MI_DISCORD_ID
-
 @bot.tree.error
 async def on_app_command_error(interaction: discord.Interaction, error: app_commands.AppCommandError):
     if isinstance(error, app_commands.MissingPermissions):
@@ -73,7 +79,7 @@ async def on_app_command_error(interaction: discord.Interaction, error: app_comm
         msg = "❌ No tienes autorización para usar este comando."
     else:
         msg = "❌ Ocurrió un error inesperado al procesar el comando."
-        print(f"⚠️ Error en comando '{interaction.command.name if interaction.command else 'desconocido'}': {error}")
+        print(f"⚠️ Error en comando '{interaction.command.name if interaction.command else 'desconocido'}': {error}[cite: 8]")
 
     if interaction.response.is_done():
         await interaction.followup.send(msg, ephemeral=True)
@@ -89,7 +95,7 @@ async def on_ready():
 if __name__ == "__main__":
     token = os.getenv("DISCORD_TOKEN")
     if not token:
-        print("❌ Error crítico: La variable DISCORD_TOKEN no está configurada en Render.")
+        print("❌ Error crítico: La variable DISCORD_TOKEN no está configurada.")
     else:
         keep_alive()
         bot.run(token)
