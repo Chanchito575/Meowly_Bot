@@ -384,7 +384,7 @@ class IA(commands.Cog):
         dt_fin = dt_fin.replace(hour=23, minute=59, second=59)
         await self.obtener_resumen(interaction, f"Resumen entre {fecha_inicio} y {fecha_fin}", after=dt_ini, before=dt_fin)
 
-    @grupo_resumen.command(name="mensajes", description="Resume una cantidad específica de mensajes (hasta 1000)")
+    @grupo_resumen.command(name="mensajes", description="Resume una cantidad específica de mensajes (hasta 1000)[D")
     @app_commands.guild_only()
     async def res_mensajes(self, interaction: discord.Interaction, cantidad: int):
         if cantidad < 1 or cantidad > 1000:
