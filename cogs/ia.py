@@ -162,6 +162,12 @@ class IA(commands.Cog):
         hf_key = os.getenv("HF_TOKEN")
         groq_key = os.getenv("GROQ_API_KEY")
 
+        # --- DEPURACIÓN DE LLAVES ---
+        print(f"🔍 [DEBUG] MISTRAL_API_KEY detectada: {bool(mistral_key)} (Largo: {len(mistral_key) if mistral_key else 0})")
+        print(f"🔍 [DEBUG] HF_TOKEN detectado: {bool(hf_key)} (Largo: {len(hf_key) if hf_key else 0})")
+        print(f"🔍 [DEBUG] GROQ_API_KEY detectada: {bool(groq_key)} (Largo: {len(groq_key) if groq_key else 0})")
+        # -----------------------------
+
         self.mistral_client = openai.AsyncOpenAI(base_url="https://api.mistral.ai/v1/", api_key=mistral_key, timeout=30.0) if mistral_key else None
         self.hf_client = openai.AsyncOpenAI(base_url="https://router.huggingface.co/v1/", api_key=hf_key, timeout=30.0) if hf_key else None
         self.groq_client = AsyncGroq(api_key=groq_key, timeout=30.0) if groq_key else None
@@ -384,7 +390,7 @@ class IA(commands.Cog):
         dt_fin = dt_fin.replace(hour=23, minute=59, second=59)
         await self.obtener_resumen(interaction, f"Resumen entre {fecha_inicio} y {fecha_fin}", after=dt_ini, before=dt_fin)
 
-    @grupo_resumen.command(name="mensajes", description="Resume una cantidad específica de mensajes (hasta 1000)[D")
+    @grupo_resumen.command(name="mensajes", description="Resume una cantidad específica de mensajes (hasta 1000)")
     @app_commands.guild_only()
     async def res_mensajes(self, interaction: discord.Interaction, cantidad: int):
         if cantidad < 1 or cantidad > 1000:
