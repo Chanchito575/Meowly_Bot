@@ -88,6 +88,12 @@ class VistaAplicarElemento(discord.ui.View):
         self.select_canal.callback = self.callback_canal
         self.add_item(self.select_canal)
 
+    async def interaction_check(self, interaction: discord.Interaction) -> bool:
+        if not interaction.user.guild_permissions.manage_channels:
+            await interaction.response.send_message("❌ No tienes permisos de 'Gestionar canales' para usar este menú.", ephemeral=True)
+            return False
+        return True
+
     async def callback_estilo(self, interaction: discord.Interaction):
         self.estilo_seleccionado = self.select_estilo.values[0]
         await interaction.response.send_message(
