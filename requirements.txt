@@ -1,5 +1,5 @@
 discord.py
-openai
+openai>=1.40.0
 groq
 Flask
 aiohttp
