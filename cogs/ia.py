@@ -18,6 +18,8 @@ MODELO_QWEN = os.getenv("MODELO_QWEN", "Qwen/Qwen2.5-72B-Instruct")
 MODELO_MISTRAL = os.getenv("MODELO_MISTRAL", "mistral-small-latest")
 MODELO_JUEZ = os.getenv("MODELO_GROQ", "openai/gpt-oss-120b")
 MODELO_GROQ_RESPALDO = "openai/gpt-oss-20b"
+USAR_ENSAMBLE = os.getenv("MODO_ENSAMBLE", "0") == "1"
+COOLDOWN_429_SEG = 60
 
 
 def leer_key(*nombres: str) -> Optional[str]:
@@ -198,12 +200,11 @@ class IA(commands.Cog):
         hf_key = leer_key("HF_TOKEN", "HUGGINGFACE_API_KEY", "HF_API_KEY", "QWEN_API_KEY")
         groq_key = leer_key("GROQ_API_KEY", "GROQ_KEY")
         self.ultimos_errores = {}
+        self.pausa_hasta = {}
 
-        # --- DEPURACIÓN DE LLAVES ---
         print(f"🔍 [DEBUG] MISTRAL_API_KEY detectada: {bool(mistral_key)} (Largo: {len(mistral_key) if mistral_key else 0})")
         print(f"🔍 [DEBUG] HF_TOKEN detectado: {bool(hf_key)} (Largo: {len(hf_key) if hf_key else 0})")
         print(f"🔍 [DEBUG] GROQ_API_KEY detectada: {bool(groq_key)} (Largo: {len(groq_key) if groq_key else 0})")
-        # -----------------------------
 
         self.mistral_client = openai.AsyncOpenAI(base_url="https://api.mistral.ai/v1/", api_key=mistral_key, timeout=30.0) if mistral_key else None
         self.hf_client = openai.AsyncOpenAI(base_url="https://router.huggingface.co/v1/", api_key=hf_key, timeout=30.0) if hf_key else None
@@ -234,6 +235,36 @@ class IA(commands.Cog):
             self.ultimos_errores["mistral"] = describir_error(e)
             print(f"⚠️ Fallo Mistral: {self.ultimos_errores['mistral']}")
             return None
+
+    async def _cadena_respaldo(self, messages: list) -> str:
+        """Prueba una IA a la vez: Groq -> Mistral -> Qwen. Si una da 429, la salta 60s."""
+        ahora = asyncio.get_running_loop().time()
+        msgs = normalizar_mensajes(messages)
+        intentos = []
+        if self.groq_client:
+            intentos += [("groq", self.groq_client, MODELO_JUEZ), ("groq", self.groq_client, MODELO_GROQ_RESPALDO)]
+        if self.mistral_client:
+            intentos.append(("mistral", self.mistral_client, MODELO_MISTRAL))
+        if self.hf_client:
+            intentos.append(("qwen", self.hf_client, MODELO_QWEN))
+
+        for nombre, cliente, modelo in intentos:
+            clave = f"{nombre}:{modelo}"
+            if self.pausa_hasta.get(clave, 0) > ahora:
+                continue
+            try:
+                resp = await cliente.chat.completions.create(
+                    model=modelo, messages=msgs, temperature=0.7, max_tokens=2500
+                )
+                texto = resp.choices[0].message.content
+                if texto and texto.strip():
+                    return texto
+            except Exception as e:
+                self.ultimos_errores[nombre] = describir_error(e)
+                print(f"⚠️ Fallo {nombre} ({modelo}): {self.ultimos_errores[nombre]}")
+                if getattr(e, "status_code", None) == 429:
+                    self.pausa_hasta[clave] = ahora + COOLDOWN_429_SEG
+        return "❌ Error de conexión con los servicios de IA."
 
     async def consultar_ensamble(self, prompt_o_mensajes, es_resumen=False, info_web="") -> str:
         owner_id = getattr(self.bot, 'owner_id_custom', 1481047586457518141)
@@ -289,6 +320,9 @@ class IA(commands.Cog):
             messages = base_messages + [{"role": "user", "content": prompt_o_mensajes}]
         else:
             messages = base_messages + list(prompt_o_mensajes)
+
+        if not USAR_ENSAMBLE:
+            return await self._cadena_respaldo(messages)
 
         resultados = await asyncio.gather(
             self._consultar_qwen(messages),
