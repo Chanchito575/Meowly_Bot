@@ -16,8 +16,8 @@ from groq import AsyncGroq
 MAX_USUARIOS_MEMORIA = 100
 MODELO_QWEN = os.getenv("MODELO_QWEN", "Qwen/Qwen2.5-72B-Instruct")
 MODELO_MISTRAL = os.getenv("MODELO_MISTRAL", "mistral-small-latest")
-MODELO_JUEZ = os.getenv("MODELO_GROQ", "llama-3.3-70b-versatile")
-MODELO_GROQ_RESPALDO = "llama-3.1-8b-instant"
+MODELO_JUEZ = os.getenv("MODELO_GROQ", "openai/gpt-oss-120b")
+MODELO_GROQ_RESPALDO = "openai/gpt-oss-20b"
 
 
 def leer_key(*nombres: str) -> Optional[str]:
@@ -268,7 +268,7 @@ class IA(commands.Cog):
             if self.groq_client:
                 try:
                     resp = await self.groq_client.chat.completions.create(
-                        model=MODELO_JUEZ, messages=messages, temperature=0.5, max_tokens=1500
+                        model=MODELO_JUEZ, messages=messages, temperature=0.5, max_tokens=2500
                     )
                     return resp.choices[0].message.content
                 except Exception as e:
@@ -304,7 +304,7 @@ class IA(commands.Cog):
                 for modelo in (MODELO_JUEZ, MODELO_GROQ_RESPALDO):
                     try:
                         resp_groq_directo = await self.groq_client.chat.completions.create(
-                            model=modelo, messages=normalizar_mensajes(messages), temperature=0.7, max_tokens=1500
+                            model=modelo, messages=normalizar_mensajes(messages), temperature=0.7, max_tokens=2500
                         )
                         return resp_groq_directo.choices[0].message.content
                     except Exception as e:
@@ -323,7 +323,7 @@ class IA(commands.Cog):
                     {"role": "user", "content": f"Opción A:\n{texto_qwen}\n\nOpción B:\n{texto_mistral}\n\nGenera la respuesta final ideal:"}
                 ]
                 resp_final = await self.groq_client.chat.completions.create(
-                    model=MODELO_JUEZ, messages=prompt_juez, temperature=0.7, max_tokens=1500
+                    model=MODELO_JUEZ, messages=prompt_juez, temperature=0.7, max_tokens=2500
                 )
                 return resp_final.choices[0].message.content
             except Exception as e:
