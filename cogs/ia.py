@@ -14,9 +14,45 @@ import openai
 from groq import AsyncGroq
 
 MAX_USUARIOS_MEMORIA = 100
-MODELO_QWEN = "Qwen/Qwen2.5-Coder-32B-Instruct" 
-MODELO_MISTRAL = "mistral-small-latest"         
-MODELO_JUEZ = "llama-3.1-8b-instant"         
+MODELO_QWEN = os.getenv("MODELO_QWEN", "Qwen/Qwen2.5-72B-Instruct")
+MODELO_MISTRAL = os.getenv("MODELO_MISTRAL", "mistral-small-latest")
+MODELO_JUEZ = os.getenv("MODELO_GROQ", "llama-3.3-70b-versatile")
+MODELO_GROQ_RESPALDO = "llama-3.1-8b-instant"
+
+
+def leer_key(*nombres: str) -> Optional[str]:
+    """Lee la primera variable de entorno que exista, limpiando espacios, saltos de línea y comillas."""
+    for n in nombres:
+        v = os.getenv(n)
+        if v:
+            v = v.strip().strip('"').strip("'").strip()
+            if v:
+                return v
+    return None
+
+
+def describir_error(e: Exception) -> str:
+    status = getattr(e, "status_code", None)
+    cuerpo = getattr(e, "body", None) or getattr(e, "message", None) or str(e)
+    return f"{type(e).__name__} | status={status} | {str(cuerpo)[:300]}"
+
+
+def normalizar_mensajes(messages: list) -> list:
+    """Mistral/HF son estrictos: une mensajes seguidos del mismo rol y evita que empiece con 'assistant'."""
+    system = [m["content"] for m in messages if m["role"] == "system"]
+    resto = [m for m in messages if m["role"] != "system"]
+    while resto and resto[0]["role"] != "user":
+        resto.pop(0)
+    fusion = []
+    for m in resto:
+        if fusion and fusion[-1]["role"] == m["role"]:
+            fusion[-1]["content"] += "\n\n" + m["content"]
+        else:
+            fusion.append({"role": m["role"], "content": m["content"]})
+    salida = []
+    if system:
+        salida.append({"role": "system", "content": "\n\n".join(system)})
+    return salida + fusion
 
 
 class HistorialIA:
@@ -158,9 +194,10 @@ class IA(commands.Cog):
     def __init__(self, bot):
         self.bot = bot
         
-        mistral_key = os.getenv("MISTRAL_API_KEY")
-        hf_key = os.getenv("HF_TOKEN")
-        groq_key = os.getenv("GROQ_API_KEY")
+        mistral_key = leer_key("MISTRAL_API_KEY", "MISTRAL_KEY")
+        hf_key = leer_key("HF_TOKEN", "HUGGINGFACE_API_KEY", "HF_API_KEY", "QWEN_API_KEY")
+        groq_key = leer_key("GROQ_API_KEY", "GROQ_KEY")
+        self.ultimos_errores = {}
 
         # --- DEPURACIÓN DE LLAVES ---
         print(f"🔍 [DEBUG] MISTRAL_API_KEY detectada: {bool(mistral_key)} (Largo: {len(mistral_key) if mistral_key else 0})")
@@ -177,11 +214,12 @@ class IA(commands.Cog):
             return None
         try:
             resp = await self.hf_client.chat.completions.create(
-                model=MODELO_QWEN, messages=messages, temperature=0.5, max_tokens=1500
+                model=MODELO_QWEN, messages=normalizar_mensajes(messages), temperature=0.5, max_tokens=1500
             )
             return resp.choices[0].message.content
         except Exception as e:
-            print(f"⚠️ Fallo Qwen: {e}")
+            self.ultimos_errores["qwen"] = describir_error(e)
+            print(f"⚠️ Fallo Qwen: {self.ultimos_errores['qwen']}")
             return None
 
     async def _consultar_mistral(self, messages: list) -> Optional[str]:
@@ -189,11 +227,12 @@ class IA(commands.Cog):
             return None
         try:
             resp = await self.mistral_client.chat.completions.create(
-                model=MODELO_MISTRAL, messages=messages, temperature=0.7, max_tokens=1500
+                model=MODELO_MISTRAL, messages=normalizar_mensajes(messages), temperature=0.7, max_tokens=1500
             )
             return resp.choices[0].message.content
         except Exception as e:
-            print(f"⚠️ Fallo Mistral: {e}")
+            self.ultimos_errores["mistral"] = describir_error(e)
+            print(f"⚠️ Fallo Mistral: {self.ultimos_errores['mistral']}")
             return None
 
     async def consultar_ensamble(self, prompt_o_mensajes, es_resumen=False, info_web="") -> str:
@@ -242,9 +281,9 @@ class IA(commands.Cog):
             f"Si los usuarios te preguntan quién te creó o quién es tu creador, debes responder obligatoriamente indicando que te creó <@{owner_id}>."
         )
         
-        base_messages = [{"role": "system", "content": system_instrucciones}]
         if info_web:
-            base_messages.append({"role": "user", "content": f"Información web reciente para usar de contexto si es necesario:\n{info_web}\n\n"})
+            system_instrucciones += f"\n\nInformación web reciente para usar de contexto si es necesario:\n{info_web}"
+        base_messages = [{"role": "system", "content": system_instrucciones}]
         
         if isinstance(prompt_o_mensajes, str):
             messages = base_messages + [{"role": "user", "content": prompt_o_mensajes}]
@@ -262,13 +301,15 @@ class IA(commands.Cog):
 
         if not texto_qwen and not texto_mistral:
             if self.groq_client:
-                try:
-                    resp_groq_directo = await self.groq_client.chat.completions.create(
-                        model=MODELO_JUEZ, messages=messages, temperature=0.7, max_tokens=1500
-                    )
-                    return resp_groq_directo.choices[0].message.content
-                except Exception as e:
-                    print(f"⚠️ Fallo Respaldo Groq: {e}")
+                for modelo in (MODELO_JUEZ, MODELO_GROQ_RESPALDO):
+                    try:
+                        resp_groq_directo = await self.groq_client.chat.completions.create(
+                            model=modelo, messages=normalizar_mensajes(messages), temperature=0.7, max_tokens=1500
+                        )
+                        return resp_groq_directo.choices[0].message.content
+                    except Exception as e:
+                        self.ultimos_errores["groq"] = describir_error(e)
+                        print(f"⚠️ Fallo Respaldo Groq ({modelo}): {self.ultimos_errores['groq']}")
 
             return "❌ Error de conexión con los servicios de IA."
 
@@ -311,6 +352,27 @@ class IA(commands.Cog):
             await historial.agregar("assistant", respuesta)
         
         await enviar_respuesta_larga(interaction, respuesta, prefijo="🐱 ")
+
+    @app_commands.command(name="ia_estado", description="Diagnóstico de las APIs de IA (solo administradores)")
+    @app_commands.checks.has_permissions(administrator=True)
+    async def ia_estado(self, interaction: discord.Interaction):
+        await interaction.response.defer(ephemeral=True)
+        test = [{"role": "user", "content": "Responde solo: ok"}]
+        lineas = []
+        for nombre, cliente, modelo in (
+            ("Qwen (HF)", self.hf_client, MODELO_QWEN),
+            ("Mistral", self.mistral_client, MODELO_MISTRAL),
+            ("Groq", self.groq_client, MODELO_JUEZ),
+        ):
+            if not cliente:
+                lineas.append(f"❌ **{nombre}**: llave NO detectada en las variables de entorno")
+                continue
+            try:
+                await cliente.chat.completions.create(model=modelo, messages=test, max_tokens=5)
+                lineas.append(f"✅ **{nombre}** (`{modelo}`): funciona")
+            except Exception as e:
+                lineas.append(f"❌ **{nombre}** (`{modelo}`): {describir_error(e)[:350]}")
+        await interaction.followup.send("\n".join(lineas), ephemeral=True)
 
     grupo_limpiar = app_commands.Group(name="limpiar", description="Borra la memoria del bot")
 
