@@ -21,6 +21,8 @@ MODELO_QWEN = os.getenv("MODELO_QWEN", "Qwen/Qwen2.5-7B-Instruct")
 
 MAX_FUENTES = 25
 CACHE_TTL = 30.0
+COLECCION_GLOBAL = "fuentes_globales"
+DOC_GLOBAL = "mapa"
 
 
 def leer_key(*nombres: str):
@@ -40,32 +42,32 @@ def describir_error(e: Exception) -> str:
 
 
 class ErrorFuente(Exception):
-    """Error con un mensaje seguro para mostrárselo al usuario."""
+    pass
 
 
 EMOJI_REGEX = re.compile(
     r"(<a?:\w+:\d+>|[\U00010000-\U0010ffff\u2600-\u27ff\u2300-\u23ff\u2B50\u200d]+)"
 )
 RANGOS_UNICODE = [
-    ("Sans-Serif Bold", 0x1D5D4, 0x1D5EE, 0x1D7EC),
-    ("Sans-Serif Regular", 0x1D5A0, 0x1D5BA, 0x1D7E2),
-    ("Sans-Serif Italic", 0x1D608, 0x1D622, None),
-    ("Sans-Serif Bold Italic", 0x1D63C, 0x1D656, None),
-    ("Serif Bold", 0x1D400, 0x1D41A, 0x1D7CE),
-    ("Serif Italic", 0x1D434, 0x1D44E, None),
-    ("Serif Bold Italic", 0x1D468, 0x1D482, None),
-    ("Script Bold", 0x1D4D0, 0x1D4EA, None),
-    ("Fraktur Bold", 0x1D56C, 0x1D586, None),
-    ("Monospace", 0x1D670, 0x1D68A, 0x1D7F6),
-    ("Double-Struck", 0x1D538, 0x1D552, 0x1D7D8),
-    ("Circled", 0x24B6, 0x24D0, None),
-    ("Fullwidth", 0xFF21, 0xFF41, 0xFF10),
+    ("sans-serif-bold", 0x1D5D4, 0x1D5EE, 0x1D7EC),
+    ("sans-serif", 0x1D5A0, 0x1D5BA, 0x1D7E2),
+    ("sans-serif-italic", 0x1D608, 0x1D622, None),
+    ("sans-serif-bold-italic", 0x1D63C, 0x1D656, None),
+    ("serif-bold", 0x1D400, 0x1D41A, 0x1D7CE),
+    ("serif-italic", 0x1D434, 0x1D44E, None),
+    ("serif-bold-italic", 0x1D468, 0x1D482, None),
+    ("script-bold", 0x1D4D0, 0x1D4EA, None),
+    ("fraktur-bold", 0x1D56C, 0x1D586, None),
+    ("monospace", 0x1D670, 0x1D68A, 0x1D7F6),
+    ("double-struck", 0x1D538, 0x1D552, 0x1D7D8),
+    ("circled", 0x24B6, 0x24D0, None),
+    ("fullwidth", 0xFF21, 0xFF41, 0xFF10),
 ]
 
 EXCEPCIONES_GLIFOS = {
-    "Serif Italic": {"h": "ℎ"},
-    "Double-Struck": {"C": "ℂ", "H": "ℍ", "N": "ℕ", "P": "ℙ", "Q": "ℚ", "R": "ℝ", "Z": "ℤ"},
-    "Circled": {"0": "⓪", **{str(i): chr(0x2460 + i - 1) for i in range(1, 10)}},
+    "serif-italic": {"h": "ℎ"},
+    "double-struck": {"C": "ℂ", "H": "ℍ", "N": "ℕ", "P": "ℙ", "Q": "ℚ", "R": "ℝ", "Z": "ℤ"},
+    "circled": {"0": "⓪", **{str(i): chr(0x2460 + i - 1) for i in range(1, 10)}},
 }
 
 SMALL_CAPS_MAP = {
@@ -83,7 +85,7 @@ TIPOS_EDITABLES = (
 )
 
 
-def generar_bloque_completo(char_muestra: str) -> dict:
+def generar_bloque_completo(char_muestra: str):
     code = ord(char_muestra)
     for nombre, a_start, a_low, num_start in RANGOS_UNICODE:
         en_mayus = bool(a_start) and a_start <= code <= a_start + 25
@@ -99,8 +101,8 @@ def generar_bloque_completo(char_muestra: str) -> dict:
                 for i in range(10):
                     mapeo[str(i)] = chr(num_start + i)
             mapeo.update(EXCEPCIONES_GLIFOS.get(nombre, {}))
-            return mapeo
-    return {}
+            return nombre, mapeo
+    return None, {}
 
 
 def normalizar_nombre_fuente(nombre: str) -> str:
@@ -109,170 +111,481 @@ def normalizar_nombre_fuente(nombre: str) -> str:
         raise ErrorFuente(
             "El nombre solo puede tener letras, números, espacios, guiones y guion bajo (máximo 32 caracteres)."
         )
-    return nombre
+    return nombre.replace(" ", "-")
 
 
-class VistaAplicarElemento(discord.ui.View):
-    def __init__(self, cog, guild_id: int, fuentes: dict, autor_id: int):
-        super().__init__(timeout=300)
+class ModalNombre(discord.ui.Modal):
+    def __init__(self, cog, tipo: str, elemento, autor_id: int):
+        super().__init__(title=f"Guardar fuente desde {tipo}")
         self.cog = cog
-        self.guild_id = guild_id
-        self.fuentes = fuentes
+        self.tipo = tipo
+        self.elemento = elemento
         self.autor_id = autor_id
-        self.estilo_seleccionado = None
-
-        nombres = [n for n in fuentes.keys() if 0 < len(n) <= 100][:MAX_FUENTES]
-        opciones_estilos = [
-            discord.SelectOption(label=n.capitalize()[:100], value=n)
-            for n in nombres
-        ]
-        self.select_estilo = discord.ui.Select(
-            placeholder="🎨 Selecciona un estilo registrado",
-            options=opciones_estilos,
+        self.nombre_input = discord.ui.TextInput(
+            label="Nombre de la fuente (local)",
+            placeholder="Ej: mi-fuente",
+            min_length=1,
+            max_length=32,
         )
-        self.select_estilo.callback = self.callback_estilo
-        self.add_item(self.select_estilo)
+        self.add_item(self.nombre_input)
 
-        self.select_canal = discord.ui.ChannelSelect(
-            placeholder="📁 Selecciona canal (Texto, Voz o Categoría)",
-            channel_types=[
-                discord.ChannelType.text,
-                discord.ChannelType.voice,
-                discord.ChannelType.stage_voice,
-                discord.ChannelType.forum,
-                discord.ChannelType.category,
-            ],
+    async def on_submit(self, interaction: discord.Interaction):
+        if interaction.user.id != self.autor_id:
+            return await interaction.response.send_message("❌ Este formulario no es tuyo.", ephemeral=True)
+        nombre = self.nombre_input.value.strip()
+        await interaction.response.defer(ephemeral=True)
+        try:
+            nombre = normalizar_nombre_fuente(nombre)
+            mapeo, nombre_global, ya_global = await self.cog.extraer_mapeo(self.elemento.name, interaction.guild_id)
+            await self.cog.guardar_local(interaction.guild_id, nombre, mapeo)
+
+            if ya_global:
+                texto_global = f"🌐 Ya existía en global como **{nombre_global}** (sin gastar tokens)."
+            elif nombre_global:
+                await self.cog.guardar_global(nombre_global, mapeo)
+                texto_global = f"🌐 Guardada en global como **{nombre_global}**."
+            else:
+                rango, _ = generar_bloque_completo(self.elemento.name[0]) if self.elemento.name else (None, {})
+                if rango:
+                    await self.cog.guardar_global(rango, mapeo)
+                    texto_global = f"🌐 Guardada en global como **{rango}**."
+                else:
+                    global_name = f"auto-{nombre}"
+                    await self.cog.guardar_global(global_name, mapeo)
+                    texto_global = f"🌐 Guardada en global como **{global_name}**."
+
+            await interaction.followup.send(
+                f"🧠 Fuente **{nombre}** guardada desde {self.tipo} **{self.elemento.name}** ({len(mapeo)} chars).\n{texto_global}",
+                ephemeral=True,
+            )
+        except ErrorFuente as e:
+            await interaction.followup.send(f"❌ {e}", ephemeral=True)
+        except Exception as e:
+            print(f"⚠️ Error en ModalNombre: {type(e).__name__}: {e}")
+            traceback.print_exc()
+            await interaction.followup.send("❌ Error al procesar la fuente.", ephemeral=True)
+
+
+class ModalProbar(discord.ui.Modal):
+    def __init__(self, cog, mapeo: dict, nombre: str, autor_id: int):
+        super().__init__(title=f"Probar: {nombre[:40]}")
+        self.cog = cog
+        self.mapeo = mapeo
+        self.autor_id = autor_id
+        self.texto_input = discord.ui.TextInput(
+            label="Texto de prueba",
+            placeholder="Ej: hola mundo",
+            min_length=1,
+            max_length=100,
         )
-        self.select_canal.callback = self.callback_canal
-        self.add_item(self.select_canal)
+        self.add_item(self.texto_input)
+
+    async def on_submit(self, interaction: discord.Interaction):
+        if interaction.user.id != self.autor_id:
+            return await interaction.response.send_message("❌ Este formulario no es tuyo.", ephemeral=True)
+        texto = self.texto_input.value.strip()
+        resultado = self.cog.construir_nombre_inteligente(texto, None, self.mapeo, es_cat_o_voz=True)
+        resultado = resultado.replace("`", "'")
+        await interaction.response.send_message(f"👁️ **Vista Previa:** `{resultado}`", ephemeral=True)
+
+
+class VistaEscanear(discord.ui.View):
+    def __init__(self, cog, autor_id: int):
+        super().__init__(timeout=120)
+        self.cog = cog
+        self.autor_id = autor_id
 
     async def interaction_check(self, interaction: discord.Interaction) -> bool:
-        if interaction.guild is None:
-            await interaction.response.send_message("❌ Este menú solo funciona en un servidor.", ephemeral=True)
-            return False
         if interaction.user.id != self.autor_id:
-            await interaction.response.send_message("❌ Este menú pertenece a otra persona.", ephemeral=True)
+            await interaction.response.send_message("❌ Este menú no es tuyo.", ephemeral=True)
             return False
         return True
 
-    async def on_error(self, interaction: discord.Interaction, error: Exception, item) -> None:
-        print(f"⚠️ Error en el menú de fuentes: {type(error).__name__}: {error}")
-        traceback.print_exception(type(error), error, error.__traceback__)
-        msg = "❌ Ocurrió un error inesperado en el menú."
-        try:
-            if interaction.response.is_done():
-                await interaction.followup.send(msg, ephemeral=True)
-            else:
-                await interaction.response.send_message(msg, ephemeral=True)
-        except discord.HTTPException:
-            pass
-
-    async def callback_estilo(self, interaction: discord.Interaction):
-        self.estilo_seleccionado = self.select_estilo.values[0]
-        for opcion in self.select_estilo.options:
-            opcion.default = opcion.value == self.estilo_seleccionado
-        await interaction.response.edit_message(view=self)
-
-    async def callback_canal(self, interaction: discord.Interaction):
-        if not self.estilo_seleccionado:
-            return await interaction.response.send_message(
-                "⚠️ Primero selecciona un estilo en el menú superior.", ephemeral=True
-            )
-
-        await interaction.response.defer(ephemeral=True)
-
-        target = interaction.guild.get_channel(self.select_canal.values[0].id)
-        if target is None:
-            return await interaction.followup.send("❌ Elemento no encontrado.", ephemeral=True)
-
-        mapeo = self.fuentes.get(self.estilo_seleccionado)
-        if not mapeo:
-            return await interaction.followup.send("❌ Ese estilo ya no existe.", ephemeral=True)
-
-        nuevo_nombre = self.cog.construir_nombre_inteligente(
-            texto_original=target.name,
-            texto_nuevo=None,
-            mapeo_fuente=mapeo,
-            es_categoria_o_voz=self.cog.es_categoria_o_voz(target),
+    @discord.ui.button(label="Desde canal", style=discord.ButtonStyle.primary, emoji="📁")
+    async def btn_canal(self, interaction: discord.Interaction, button: discord.ui.Button):
+        select = discord.ui.ChannelSelect(
+            placeholder="Selecciona un canal de texto o voz",
+            channel_types=[discord.ChannelType.text, discord.ChannelType.voice, discord.ChannelType.stage_voice, discord.ChannelType.forum],
         )
-        _, msg = await self.cog.editar_nombre(interaction, target, nuevo_nombre)
-        await interaction.followup.send(msg, ephemeral=True)
+        view = discord.ui.View(timeout=120)
+
+        async def callback(inter: discord.Interaction):
+            if inter.user.id != self.autor_id:
+                return await inter.response.send_message("❌ Este menú no es tuyo.", ephemeral=True)
+            ch = inter.guild.get_channel(select.values[0].id)
+            if ch is None:
+                return await inter.response.send_message("❌ Canal no encontrado.", ephemeral=True)
+            modal = ModalNombre(self.cog, "canal", ch, self.autor_id)
+            await inter.response.send_modal(modal)
+
+        select.callback = callback
+        view.add_item(select)
+        await interaction.response.send_message("📁 Selecciona el canal:", view=view, ephemeral=True)
+
+    @discord.ui.button(label="Desde categoría", style=discord.ButtonStyle.primary, emoji="🗂️")
+    async def btn_categoria(self, interaction: discord.Interaction, button: discord.ui.Button):
+        select = discord.ui.ChannelSelect(
+            placeholder="Selecciona una categoría",
+            channel_types=[discord.ChannelType.category],
+        )
+        view = discord.ui.View(timeout=120)
+
+        async def callback(inter: discord.Interaction):
+            if inter.user.id != self.autor_id:
+                return await inter.response.send_message("❌ Este menú no es tuyo.", ephemeral=True)
+            cat = inter.guild.get_channel(select.values[0].id)
+            if cat is None:
+                return await inter.response.send_message("❌ Categoría no encontrada.", ephemeral=True)
+            modal = ModalNombre(self.cog, "categoría", cat, self.autor_id)
+            await inter.response.send_modal(modal)
+
+        select.callback = callback
+        view.add_item(select)
+        await interaction.response.send_message("🗂️ Selecciona la categoría:", view=view, ephemeral=True)
+
+
+class VistaAplicarGlobal(discord.ui.View):
+    def __init__(self, cog, autor_id: int, fuentes: dict):
+        super().__init__(timeout=120)
+        self.cog = cog
+        self.autor_id = autor_id
+        if not fuentes:
+            return
+        opciones = [discord.SelectOption(label=n[:100], value=n[:100]) for n in list(fuentes.keys())[:25]]
+        select = discord.ui.Select(placeholder="🌐 Selecciona una fuente global", options=opciones)
+        select.callback = self.on_select
+        self.fuentes = fuentes
+        self.add_item(select)
+
+    async def interaction_check(self, interaction: discord.Interaction) -> bool:
+        if interaction.user.id != self.autor_id:
+            await interaction.response.send_message("❌ Este menú no es tuyo.", ephemeral=True)
+            return False
+        return True
+
+    async def on_select(self, interaction: discord.Interaction):
+        nombre = interaction.data["values"][0]
+        mapeo = self.fuentes.get(nombre)
+        if not mapeo:
+            return await interaction.response.send_message("❌ Fuente no encontrada.", ephemeral=True)
+        select = discord.ui.ChannelSelect(
+            placeholder="Selecciona canal o categoría a rediseñar",
+            channel_types=[
+                discord.ChannelType.text, discord.ChannelType.voice,
+                discord.ChannelType.stage_voice, discord.ChannelType.forum,
+                discord.ChannelType.category,
+            ],
+        )
+        view = discord.ui.View(timeout=120)
+
+        async def callback(inter: discord.Interaction):
+            if inter.user.id != self.autor_id:
+                return await inter.response.send_message("❌ Este menú no es tuyo.", ephemeral=True)
+            target = inter.guild.get_channel(select.values[0].id)
+            if target is None:
+                return await inter.response.send_message("❌ Elemento no encontrado.", ephemeral=True)
+            await inter.response.defer(ephemeral=True)
+            nuevo_nombre = self.cog.construir_nombre_inteligente(
+                target.name, None, mapeo, es_cat_o_voz=self.cog.es_categoria_o_voz(target)
+            )
+            _, msg = await self.cog.editar_nombre(inter, target, nuevo_nombre)
+            await inter.followup.send(msg, ephemeral=True)
+
+        select.callback = callback
+        view.add_item(select)
+        await interaction.response.send_message(f"🎨 Aplicando **{nombre}**. Elige el destino:", view=view, ephemeral=True)
+
+
+class VistaAplicarLocal(discord.ui.View):
+    def __init__(self, cog, autor_id: int, fuentes: dict):
+        super().__init__(timeout=120)
+        self.cog = cog
+        self.autor_id = autor_id
+        if not fuentes:
+            return
+        opciones = [discord.SelectOption(label=n[:100], value=n[:100]) for n in list(fuentes.keys())[:25]]
+        select = discord.ui.Select(placeholder="📁 Selecciona una fuente local", options=opciones)
+        select.callback = self.on_select
+        self.fuentes = fuentes
+        self.add_item(select)
+
+    async def interaction_check(self, interaction: discord.Interaction) -> bool:
+        if interaction.user.id != self.autor_id:
+            await interaction.response.send_message("❌ Este menú no es tuyo.", ephemeral=True)
+            return False
+        return True
+
+    async def on_select(self, interaction: discord.Interaction):
+        nombre = interaction.data["values"][0]
+        mapeo = self.fuentes.get(nombre)
+        if not mapeo:
+            return await interaction.response.send_message("❌ Fuente no encontrada.", ephemeral=True)
+        select = discord.ui.ChannelSelect(
+            placeholder="Selecciona canal o categoría a rediseñar",
+            channel_types=[
+                discord.ChannelType.text, discord.ChannelType.voice,
+                discord.ChannelType.stage_voice, discord.ChannelType.forum,
+                discord.ChannelType.category,
+            ],
+        )
+        view = discord.ui.View(timeout=120)
+
+        async def callback(inter: discord.Interaction):
+            if inter.user.id != self.autor_id:
+                return await inter.response.send_message("❌ Este menú no es tuyo.", ephemeral=True)
+            target = inter.guild.get_channel(select.values[0].id)
+            if target is None:
+                return await inter.response.send_message("❌ Elemento no encontrado.", ephemeral=True)
+            await inter.response.defer(ephemeral=True)
+            nuevo_nombre = self.cog.construir_nombre_inteligente(
+                target.name, None, mapeo, es_cat_o_voz=self.cog.es_categoria_o_voz(target)
+            )
+            _, msg = await self.cog.editar_nombre(inter, target, nuevo_nombre)
+            await inter.followup.send(msg, ephemeral=True)
+
+        select.callback = callback
+        view.add_item(select)
+        await interaction.response.send_message(f"🎨 Aplicando **{nombre}**. Elige el destino:", view=view, ephemeral=True)
+
+
+class VistaAplicar(discord.ui.View):
+    def __init__(self, cog, autor_id: int, locales: dict, globales: dict):
+        super().__init__(timeout=120)
+        self.cog = cog
+        self.autor_id = autor_id
+        self.locales = locales
+        self.globales = globales
+
+    async def interaction_check(self, interaction: discord.Interaction) -> bool:
+        if interaction.user.id != self.autor_id:
+            await interaction.response.send_message("❌ Este menú no es tuyo.", ephemeral=True)
+            return False
+        return True
+
+    @discord.ui.button(label="Global", style=discord.ButtonStyle.success, emoji="🌐")
+    async def btn_global(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if not self.globales:
+            return await interaction.response.send_message("📂 No hay fuentes globales guardadas.", ephemeral=True)
+        view = VistaAplicarGlobal(self.cog, self.autor_id, self.globales)
+        await interaction.response.send_message("🌐 Elige una fuente global:", view=view, ephemeral=True)
+
+    @discord.ui.button(label="Local", style=discord.ButtonStyle.primary, emoji="📁")
+    async def btn_local(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if not self.locales:
+            return await interaction.response.send_message(
+                "📂 No hay fuentes locales en este servidor. Escanea una primero con 📥.", ephemeral=True
+            )
+        view = VistaAplicarLocal(self.cog, self.autor_id, self.locales)
+        await interaction.response.send_message("📁 Elige una fuente local:", view=view, ephemeral=True)
+
+
+class VistaEliminar(discord.ui.View):
+    def __init__(self, cog, autor_id: int, fuentes: dict):
+        super().__init__(timeout=120)
+        self.cog = cog
+        self.autor_id = autor_id
+        if not fuentes:
+            return
+        opciones = [discord.SelectOption(label=n[:100], value=n[:100]) for n in list(fuentes.keys())[:25]]
+        select = discord.ui.Select(placeholder="🗑️ Selecciona una fuente local para eliminar", options=opciones)
+        select.callback = self.on_select
+        self.fuentes = fuentes
+        self.add_item(select)
+
+    async def interaction_check(self, interaction: discord.Interaction) -> bool:
+        if interaction.user.id != self.autor_id:
+            await interaction.response.send_message("❌ Este menú no es tuyo.", ephemeral=True)
+            return False
+        return True
+
+    async def on_select(self, interaction: discord.Interaction):
+        nombre = interaction.data["values"][0]
+        await interaction.response.defer(ephemeral=True)
+        ok = await self.cog.eliminar_local(interaction.guild_id, nombre)
+        if ok:
+            await interaction.followup.send(f"🗑️ Fuente **{nombre}** eliminada del servidor.", ephemeral=True)
+        else:
+            await interaction.followup.send(f"❌ No se encontró **{nombre}**.", ephemeral=True)
+
+
+class VistaProbar(discord.ui.View):
+    def __init__(self, cog, autor_id: int, fuentes: dict):
+        super().__init__(timeout=120)
+        self.cog = cog
+        self.autor_id = autor_id
+        if not fuentes:
+            return
+        opciones = [discord.SelectOption(label=n[:100], value=n[:100]) for n in list(fuentes.keys())[:25]]
+        select = discord.ui.Select(placeholder="👁️ Selecciona una fuente para probar", options=opciones)
+        select.callback = self.on_select
+        self.fuentes = fuentes
+        self.add_item(select)
+
+    async def interaction_check(self, interaction: discord.Interaction) -> bool:
+        if interaction.user.id != self.autor_id:
+            await interaction.response.send_message("❌ Este menú no es tuyo.", ephemeral=True)
+            return False
+        return True
+
+    async def on_select(self, interaction: discord.Interaction):
+        nombre = interaction.data["values"][0]
+        mapeo = self.fuentes.get(nombre)
+        if not mapeo:
+            return await interaction.response.send_message("❌ Fuente no encontrada.", ephemeral=True)
+        modal = ModalProbar(self.cog, mapeo, nombre, self.autor_id)
+        await interaction.response.send_modal(modal)
+
+
+class VistaPanelFuente(discord.ui.View):
+    def __init__(self, cog, autor_id: int):
+        super().__init__(timeout=300)
+        self.cog = cog
+        self.autor_id = autor_id
+
+    async def interaction_check(self, interaction: discord.Interaction) -> bool:
+        if interaction.user.id != self.autor_id:
+            await interaction.response.send_message("❌ Este panel no es tuyo.", ephemeral=True)
+            return False
+        return True
+
+    @discord.ui.button(label="Escanear", style=discord.ButtonStyle.primary, emoji="📥", row=0)
+    async def btn_escanear(self, interaction: discord.Interaction, button: discord.ui.Button):
+        view = VistaEscanear(self.cog, self.autor_id)
+        await interaction.response.send_message("📥 ¿Desde dónde quieres escanear?", view=view, ephemeral=True)
+
+    @discord.ui.button(label="Aplicar", style=discord.ButtonStyle.success, emoji="🎨", row=0)
+    async def btn_aplicar(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await interaction.response.defer(ephemeral=True)
+        locales = await self.cog.cargar_locales(interaction.guild_id)
+        globales = await self.cog.cargar_globales()
+        if not locales and not globales:
+            return await interaction.followup.send("📂 No hay fuentes guardadas. Escanea una primero.", ephemeral=True)
+        view = VistaAplicar(self.cog, self.autor_id, locales, globales)
+        await interaction.followup.send("🎨 ¿Qué tipo de fuente quieres aplicar?", view=view, ephemeral=True)
+
+    @discord.ui.button(label="Listar", style=discord.ButtonStyle.secondary, emoji="📋", row=0)
+    async def btn_listar(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await interaction.response.defer(ephemeral=True)
+        locales = await self.cog.cargar_locales(interaction.guild_id)
+        globales = await self.cog.cargar_globales()
+        if not locales and not globales:
+            return await interaction.followup.send("📂 No hay fuentes guardadas.", ephemeral=True)
+        embed = discord.Embed(title="🎨 Tipografías Registradas", color=discord.Color.blue())
+        if locales:
+            lineas = []
+            for n, m in list(locales.items())[:15]:
+                ejemplo = self.cog.construir_nombre_inteligente("canal-pruebas", None, m, False)
+                lineas.append(f"📁 **{n}** → `{ejemplo}` ({len(m)} chars)")
+            embed.add_field(name="Locales del servidor", value="\n".join(lineas)[:1024], inline=False)
+        if globales:
+            lineas = []
+            for n, m in list(globales.items())[:15]:
+                ejemplo = self.cog.construir_nombre_inteligente("canal-pruebas", None, m, False)
+                lineas.append(f"🌐 **{n}** → `{ejemplo}` ({len(m)} chars)")
+            embed.add_field(name="Globales", value="\n".join(lineas)[:1024], inline=False)
+        await interaction.followup.send(embed=embed, ephemeral=True)
+
+    @discord.ui.button(label="Probar", style=discord.ButtonStyle.secondary, emoji="👁️", row=1)
+    async def btn_probar(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await interaction.response.defer(ephemeral=True)
+        locales = await self.cog.cargar_locales(interaction.guild_id)
+        globales = await self.cog.cargar_globales()
+        todas = {**globales, **locales}
+        if not todas:
+            return await interaction.followup.send("📂 No hay fuentes guardadas.", ephemeral=True)
+        view = VistaProbar(self.cog, self.autor_id, todas)
+        await interaction.followup.send("👁️ Elige una fuente para probar:", view=view, ephemeral=True)
+
+    @discord.ui.button(label="Eliminar", style=discord.ButtonStyle.danger, emoji="🗑️", row=1)
+    async def btn_eliminar(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await interaction.response.defer(ephemeral=True)
+        locales = await self.cog.cargar_locales(interaction.guild_id)
+        if not locales:
+            return await interaction.followup.send(
+                "📂 No hay fuentes locales para eliminar. Las globales solo se borran desde Firestore.", ephemeral=True
+            )
+        view = VistaEliminar(self.cog, self.autor_id, locales)
+        await interaction.followup.send(
+            "🗑️ Elige una fuente local para eliminar (las globales no se pueden eliminar desde aquí):",
+            view=view, ephemeral=True,
+        )
 
 
 class Fuentes(commands.Cog):
     def __init__(self, bot):
         self.bot = bot
-        self._cache = {}
+        self._cache_local = {}
+        self._cache_global = (0.0, {})
 
         def crear(base_url, key, timeout=25.0):
             if not key:
                 return None
             return openai.AsyncOpenAI(base_url=base_url, api_key=key, timeout=timeout, max_retries=1)
 
-        self.zai_client = crear(
-            "https://api.z.ai/api/coding/paas/v4",
-            leer_key("ZAI_API_KEY", "ZHIPUAI_API_KEY"),
-        )
-        self.groq_client = crear(
-            "https://api.groq.com/openai/v1",
-            leer_key("GROQ_API_KEY", "GROQ_KEY"),
-        )
-        self.hf_client = crear(
-            "https://router.huggingface.co/v1/",
-            leer_key("HF_TOKEN", "HUGGINGFACE_API_KEY", "HF_API_KEY", "QWEN_API_KEY"),
-        )
-        self.mistral_client = crear(
-            "https://api.mistral.ai/v1/",
-            leer_key("MISTRAL_API_KEY", "MISTRAL_KEY"),
-        )
+        self.zai_client = crear("https://api.z.ai/api/coding/paas/v4", leer_key("ZAI_API_KEY", "ZHIPUAI_API_KEY"))
+        self.groq_client = crear("https://api.groq.com/openai/v1", leer_key("GROQ_API_KEY", "GROQ_KEY"))
+        self.hf_client = crear("https://router.huggingface.co/v1/", leer_key("HF_TOKEN", "HUGGINGFACE_API_KEY", "HF_API_KEY", "QWEN_API_KEY"))
 
     async def cog_unload(self):
-        for cliente in (self.zai_client, self.groq_client, self.hf_client, self.mistral_client):
+        for cliente in (self.zai_client, self.groq_client, self.hf_client):
             if cliente:
                 try:
                     await cliente.close()
                 except Exception:
                     pass
 
-    grupo_fuente = app_commands.Group(name="fuente", description="Gestión de tipografías", guild_only=True)
-    grupo_escanear = app_commands.Group(
-        name="escanear", description="Escanear y guardar tipografías", parent=grupo_fuente
-    )
-
-    async def cargar_fuentes(self, guild_id: int, usar_cache: bool = True) -> dict:
+    async def cargar_locales(self, guild_id: int, usar_cache: bool = True) -> dict:
         if not self.bot.db or not guild_id:
             return {}
-
-        guardado = self._cache.get(guild_id)
+        guardado = self._cache_local.get(guild_id)
         if usar_cache and guardado and time.monotonic() - guardado[0] < CACHE_TTL:
             return guardado[1]
 
         def _read():
             doc = self.bot.db.collection("servidores").document(str(guild_id)).get()
             if doc and doc.exists:
-                data = doc.to_dict()
-                return data.get("fuentes", {}) if data else {}
+                data = doc.to_dict() or {}
+                return data.get("fuentes", {})
             return {}
 
         try:
             fuentes = await asyncio.to_thread(_read)
-            self._cache[guild_id] = (time.monotonic(), fuentes)
+            self._cache_local[guild_id] = (time.monotonic(), fuentes)
             return fuentes
         except Exception as e:
-            print(f"⚠️ Error cargando fuentes: {type(e).__name__}: {e}")
+            print(f"⚠️ Error cargando locales: {type(e).__name__}: {e}")
             return guardado[1] if guardado else {}
 
-    async def guardar_fuente(self, guild_id: int, nombre: str, mapeo: dict) -> None:
-        if not self.bot.db or not guild_id or not mapeo:
-            raise ErrorFuente("No se pudo guardar: Firebase no está disponible.")
-        if firestore is None:
-            raise ErrorFuente("No se pudo guardar: firebase-admin no está instalado.")
+    async def cargar_globales(self, usar_cache: bool = True) -> dict:
+        if not self.bot.db:
+            return {}
+        ts, datos = self._cache_global
+        if usar_cache and time.monotonic() - ts < CACHE_TTL and datos:
+            return datos
 
-        existentes = await self.cargar_fuentes(guild_id, usar_cache=False)
+        def _read():
+            doc = self.bot.db.collection(COLECCION_GLOBAL).document(DOC_GLOBAL).get()
+            if doc and doc.exists:
+                return doc.to_dict() or {}
+            return {}
+
+        try:
+            datos = await asyncio.to_thread(_read)
+            self._cache_global = (time.monotonic(), datos)
+            return datos
+        except Exception as e:
+            print(f"⚠️ Error cargando globales: {type(e).__name__}: {e}")
+            return datos or {}
+
+    async def guardar_local(self, guild_id: int, nombre: str, mapeo: dict) -> None:
+        if not self.bot.db or not guild_id or not mapeo:
+            raise ErrorFuente("Firebase no disponible.")
+        if firestore is None:
+            raise ErrorFuente("firebase-admin no instalado.")
+
+        existentes = await self.cargar_locales(guild_id, usar_cache=False)
         if nombre not in existentes and len(existentes) >= MAX_FUENTES:
-            raise ErrorFuente(
-                f"Este servidor ya tiene {MAX_FUENTES} fuentes (el máximo). Elimina alguna con `/fuente eliminar`."
-            )
+            raise ErrorFuente(f"Máximo {MAX_FUENTES} fuentes por servidor.")
 
         def _write():
             ref = self.bot.db.collection("servidores").document(str(guild_id))
@@ -282,12 +595,28 @@ class Fuentes(commands.Cog):
         try:
             await asyncio.to_thread(_write)
         except Exception as e:
-            print(f"⚠️ Error guardando fuente: {type(e).__name__}: {e}")
+            print(f"⚠️ Error guardando local: {type(e).__name__}: {e}")
             raise ErrorFuente("Error al guardar en Firebase.")
         finally:
-            self._cache.pop(guild_id, None)
+            self._cache_local.pop(guild_id, None)
 
-    async def eliminar_fuente(self, guild_id: int, nombre: str) -> bool:
+    async def guardar_global(self, nombre: str, mapeo: dict) -> None:
+        if not self.bot.db or not mapeo or firestore is None:
+            return
+
+        def _write():
+            ref = self.bot.db.collection(COLECCION_GLOBAL).document(DOC_GLOBAL)
+            ref.set({nombre: firestore.DELETE_FIELD}, merge=True)
+            ref.set({nombre: mapeo}, merge=True)
+
+        try:
+            await asyncio.to_thread(_write)
+        except Exception as e:
+            print(f"⚠️ Error guardando global: {type(e).__name__}: {e}")
+        finally:
+            self._cache_global = (0.0, {})
+
+    async def eliminar_local(self, guild_id: int, nombre: str) -> bool:
         if not self.bot.db or not guild_id or firestore is None:
             return False
 
@@ -304,16 +633,10 @@ class Fuentes(commands.Cog):
         try:
             return await asyncio.to_thread(_delete)
         except Exception as e:
-            print(f"⚠️ Error eliminando fuente: {type(e).__name__}: {e}")
+            print(f"⚠️ Error eliminando local: {type(e).__name__}: {e}")
             return False
         finally:
-            self._cache.pop(guild_id, None)
-
-    async def _sin_db(self, interaction: discord.Interaction) -> bool:
-        if self.bot.db:
-            return False
-        await interaction.response.send_message("❌ Firebase no disponible.", ephemeral=True)
-        return True
+            self._cache_local.pop(guild_id, None)
 
     def desestilizar_texto(self, texto: str) -> str:
         resultado = []
@@ -341,40 +664,51 @@ class Fuentes(commands.Cog):
                 res.append(char)
         return "".join(res)
 
-    def construir_nombre_inteligente(self, texto_original: str, texto_nuevo, mapeo_fuente: dict,
-                                     es_categoria_o_voz: bool = False) -> str:
-        base_texto = texto_nuevo if texto_nuevo else texto_original
-        texto_limpio = self.desestilizar_texto(base_texto)
-
-        resultado = []
-        pos = 0
-        for match in EMOJI_REGEX.finditer(texto_limpio):
+    def construir_nombre_inteligente(self, texto_original: str, texto_nuevo, mapeo: dict, es_cat_o_voz: bool = False) -> str:
+        base = texto_nuevo if texto_nuevo else texto_original
+        limpio = self.desestilizar_texto(base)
+        resultado, pos = [], 0
+        for match in EMOJI_REGEX.finditer(limpio):
             start, end = match.span()
             if start > pos:
-                resultado.append(self.aplicar_mapeo(texto_limpio[pos:start], mapeo_fuente))
+                resultado.append(self.aplicar_mapeo(limpio[pos:start], mapeo))
             resultado.append(match.group(0))
             pos = end
-        if pos < len(texto_limpio):
-            resultado.append(self.aplicar_mapeo(texto_limpio[pos:], mapeo_fuente))
-
+        if pos < len(limpio):
+            resultado.append(self.aplicar_mapeo(limpio[pos:], mapeo))
         nombre_final = "".join(resultado)
-        return nombre_final if es_categoria_o_voz else nombre_final.replace(" ", "-")
+        return nombre_final if es_cat_o_voz else nombre_final.replace(" ", "-")
 
     @staticmethod
     def es_categoria_o_voz(canal) -> bool:
         return isinstance(canal, (discord.CategoryChannel, discord.VoiceChannel, discord.StageChannel))
 
-    async def estilo_autocomplete(self, interaction: discord.Interaction, current: str) -> list[app_commands.Choice[str]]:
-        if not interaction.guild_id:
-            return []
+    async def editar_nombre(self, interaction: discord.Interaction, target, nuevo_nombre: str):
+        if not isinstance(target, TIPOS_EDITABLES):
+            return False, "❌ Ese tipo no se puede rediseñar."
+        nuevo_nombre = nuevo_nombre.strip()[:100]
+        if not nuevo_nombre:
+            return False, "❌ El nombre quedó vacío."
+        if not target.permissions_for(interaction.user).manage_channels:
+            return False, f"❌ No tienes 'Gestionar canales' en **{target.name}**."
+        yo = interaction.guild.me if interaction.guild else None
+        if yo is not None and not target.permissions_for(yo).manage_channels:
+            return False, f"❌ No tengo 'Gestionar canales' en **{target.name}**."
+        if target.name == nuevo_nombre:
+            return False, "ℹ️ Ya tiene ese nombre."
         try:
-            fuentes = await self.cargar_fuentes(interaction.guild_id)
-        except Exception:
-            return []
-        return [
-            app_commands.Choice(name=n.capitalize()[:100], value=n[:100])
-            for n in fuentes.keys() if current.lower() in n.lower()
-        ][:25]
+            await asyncio.wait_for(target.edit(name=nuevo_nombre, reason=f"Fuente por {interaction.user}"), timeout=20)
+            return True, f"🎨 Rediseñado: **{nuevo_nombre}**"
+        except asyncio.TimeoutError:
+            return False, "⏳ Discord limita los cambios de nombre."
+        except discord.Forbidden:
+            return False, "❌ Sin permisos para renombrar."
+        except discord.HTTPException as e:
+            if e.status == 429:
+                return False, "⏳ Límite de Discord (2 cambios/10 min)."
+            if e.status == 400:
+                return False, "❌ Nombre inválido."
+            return False, "❌ Error de Discord."
 
     def _limpiar_json(self, texto: str) -> dict:
         try:
@@ -396,318 +730,132 @@ class Fuentes(commands.Cog):
         cambiadas = sum(1 for k, v in limpio.items() if k != v)
         return limpio if letras >= 20 and cambiadas >= 15 else {}
 
-    async def _mapear_con_zai(self, ejemplo_texto: str) -> dict:
+    async def _mapear_con_zai(self, ejemplo: str) -> dict:
         if not self.zai_client:
             return {}
         prompt = (
-            f"Analiza la fuente en: '{ejemplo_texto}'. Genera un JSON mapeando todo el abecedario "
+            f"Analiza la fuente en: '{ejemplo}'. Genera un JSON mapeando todo el abecedario "
             "(a-z, A-Z) y números (0-9) en este estilo tipográfico.\n"
             "Responde ÚNICAMENTE el JSON sin bloques de código ni explicaciones.\n"
             'Ejemplo: {"a": "𝗮", "A": "𝗔"}'
         )
         try:
             resp = await self.zai_client.chat.completions.create(
-                model=MODELO_ZAI,
-                messages=[{"role": "user", "content": prompt}],
-                temperature=0.1,
-                max_tokens=3000,
+                model=MODELO_ZAI, messages=[{"role": "user", "content": prompt}], temperature=0.1, max_tokens=3000
             )
             mapeo = self._validar_mapeo(self._limpiar_json(resp.choices[0].message.content))
             if mapeo:
                 print(f"🧠 Zai generó un mapeo de {len(mapeo)} caracteres.")
                 return mapeo
-            print("⚠️ Zai no devolvió un mapeo válido.")
         except Exception as e:
             print(f"⚠️ Zai falló: {describir_error(e)}")
         return {}
 
-    async def _comparar_con_groq(self, mapeo_nuevo: dict, fuentes_existentes: dict) -> str | None:
-        if not self.groq_client or not fuentes_existentes:
-            return None
-
-        for nombre, mapeo_viejo in fuentes_existentes.items():
-            if mapeo_nuevo == mapeo_viejo:
-                print(f"🔍 Coincidencia exacta con la fuente existente '{nombre}'.")
-                return nombre
-
-        prompt = (
-            "Compara el siguiente mapeo de fuente NUEVO con la lista de mapeos EXISTENTES.\n"
-            "Determina si el NUEVO es esencialmente el mismo estilo que alguno de los EXISTENTES.\n"
-            "Responde ÚNICAMENTE con el nombre de la fuente existente si coincide, o 'NINGUNA' si no.\n\n"
-            f"NUEVO:\n{json.dumps(mapeo_nuevo, ensure_ascii=False)}\n\n"
-            f"EXISTENTES:\n{json.dumps({k: v for k, v in fuentes_existentes.items()}, ensure_ascii=False)}"
-        )
-        try:
-            resp = await self.groq_client.chat.completions.create(
-                model=MODELO_GROQ,
-                messages=[{"role": "user", "content": prompt}],
-                temperature=0.0,
-                max_tokens=200,
-            )
-            texto = resp.choices[0].message.content.strip()
-            for nombre in fuentes_existentes:
-                if nombre.lower() in texto.lower():
-                    print(f"🔍 Groq determinó que coincide con '{nombre}'.")
-                    return nombre
-            print("🔍 Groq determinó que no coincide con ninguna fuente existente.")
-        except Exception as e:
-            print(f"⚠️ Groq falló en la comparación: {describir_error(e)}")
-        return None
-
-    async def _mapear_con_qwen(self, ejemplo_texto: str) -> dict:
+    async def _mapear_con_qwen(self, ejemplo: str) -> dict:
         if not self.hf_client:
             return {}
         prompt = (
-            f"Analiza la fuente en: '{ejemplo_texto}'. Genera un JSON mapeando todo el abecedario "
+            f"Analiza la fuente en: '{ejemplo}'. Genera un JSON mapeando todo el abecedario "
             "(a-z, A-Z) y números (0-9) en este estilo tipográfico.\n"
             "Responde ÚNICAMENTE el JSON sin bloques de código ni explicaciones.\n"
             'Ejemplo: {"a": "𝗮", "A": "𝗔"}'
         )
         try:
             resp = await self.hf_client.chat.completions.create(
-                model=MODELO_QWEN,
-                messages=[{"role": "user", "content": prompt}],
-                temperature=0.1,
-                max_tokens=3000,
+                model=MODELO_QWEN, messages=[{"role": "user", "content": prompt}], temperature=0.1, max_tokens=3000
             )
             mapeo = self._validar_mapeo(self._limpiar_json(resp.choices[0].message.content))
             if mapeo:
                 print(f"🧠 Qwen generó un mapeo de {len(mapeo)} caracteres.")
                 return mapeo
-            print("⚠️ Qwen no devolvió un mapeo válido.")
         except Exception as e:
             print(f"⚠️ Qwen falló: {describir_error(e)}")
         return {}
 
-    async def extraer_mapeo_fuente(self, ejemplo_texto: str, guild_id: int = None) -> dict:
+    async def _comparar_con_groq(self, mapeo_nuevo: dict, globales: dict):
+        if not self.groq_client or not globales:
+            return None
+        for nombre, mapeo_viejo in globales.items():
+            if mapeo_nuevo == mapeo_viejo:
+                return nombre
+        prompt = (
+            "Compara el mapeo NUEVO con los EXISTENTES. Si el NUEVO es esencialmente igual a alguno, "
+            "responde solo el nombre. Si no, responde NINGUNA.\n"
+            f"NUEVO:\n{json.dumps(mapeo_nuevo, ensure_ascii=False)}\n"
+            f"EXISTENTES:\n{json.dumps(globales, ensure_ascii=False)}"
+        )
+        try:
+            resp = await self.groq_client.chat.completions.create(
+                model=MODELO_GROQ, messages=[{"role": "user", "content": prompt}], temperature=0.0, max_tokens=200
+            )
+            texto = resp.choices[0].message.content.strip()
+            for nombre in globales:
+                if nombre.lower() in texto.lower():
+                    return nombre
+        except Exception as e:
+            print(f"⚠️ Groq falló: {describir_error(e)}")
+        return None
+
+    async def extraer_mapeo(self, ejemplo: str, guild_id: int):
         mapeo_detectado = {}
-        for char in ejemplo_texto:
-            mapa_extrapolado = generar_bloque_completo(char)
-            if mapa_extrapolado:
-                return mapa_extrapolado
-            base_char = unicodedata.normalize("NFKD", char)
-            if len(base_char) == 1 and base_char != char and base_char.isalnum():
-                mapeo_detectado[base_char] = char
+        for char in ejemplo:
+            nombre_rango, mapa = generar_bloque_completo(char)
+            if mapa:
+                return mapa, nombre_rango, True
+            base = unicodedata.normalize("NFKD", char)
+            if len(base) == 1 and base != char and base.isalnum():
+                mapeo_detectado[base] = char
             elif char in SMALL_CAPS_MAP:
                 mapeo_detectado[SMALL_CAPS_MAP[char]] = char
 
         if len(mapeo_detectado) >= 15:
-            return mapeo_detectado
+            globales = await self.cargar_globales()
+            for nombre, mapeo in globales.items():
+                if mapeo == mapeo_detectado:
+                    return mapeo, nombre, True
 
-        hay_letras_raras = any(
-            c.isalpha() and not c.isascii() and not unicodedata.normalize("NFD", c)[0].isascii()
-            for c in ejemplo_texto
-        )
-        if not mapeo_detectado and not hay_letras_raras:
+        hay_raras = any(c.isalpha() and not c.isascii() for c in ejemplo)
+        if not mapeo_detectado and not hay_raras:
             raise ErrorFuente(
-                "No detecté ninguna tipografía especial en ese texto. "
-                "Escribe algo con la fuente que quieres guardar, por ejemplo 𝗠𝗲𝗼𝘄𝗹𝘆 o ᴍᴇᴏᴡʟʏ."
+                "No detecté tipografía especial. Escribe algo como 𝗠𝗲𝗼𝘄𝗹𝘆 o ᴍᴇᴏᴡʟʏ."
             )
 
-        mapeo_zai = await self._mapear_con_zai(ejemplo_texto)
+        mapeo_zai = await self._mapear_con_zai(ejemplo)
         if mapeo_zai:
-            if guild_id:
-                fuentes_existentes = await self.cargar_fuentes(guild_id, usar_cache=False)
-                if fuentes_existentes:
-                    coincidencia = await self._comparar_con_groq(mapeo_zai, fuentes_existentes)
-                    if coincidencia:
-                        return fuentes_existentes[coincidencia]
-            return mapeo_zai
+            nombre_global = await self._comparar_con_groq(mapeo_zai, await self.cargar_globales())
+            if nombre_global:
+                return mapeo_zai, nombre_global, True
+            return mapeo_zai, None, False
 
-        mapeo_qwen = await self._mapear_con_qwen(ejemplo_texto)
+        mapeo_qwen = await self._mapear_con_qwen(ejemplo)
         if mapeo_qwen:
-            return mapeo_qwen
+            return mapeo_qwen, None, False
 
         if mapeo_detectado:
-            return mapeo_detectado
-
+            return mapeo_detectado, None, False
         raise ErrorFuente("No se pudo detectar ni extrapolar la tipografía.")
 
-    async def editar_nombre(self, interaction: discord.Interaction, target, nuevo_nombre: str):
-        if not isinstance(target, TIPOS_EDITABLES):
-            return False, "❌ Ese tipo de elemento no se puede rediseñar (solo canales, foros, escenarios y categorías)."
-
-        nuevo_nombre = nuevo_nombre.strip()[:100]
-        if not nuevo_nombre:
-            return False, "❌ El nombre resultante quedó vacío."
-
-        if not target.permissions_for(interaction.user).manage_channels:
-            return False, f"❌ No tienes permiso de 'Gestionar canales' en **{target.name}**."
-
-        yo = interaction.guild.me if interaction.guild else None
-        if yo is not None and not target.permissions_for(yo).manage_channels:
-            return False, (
-                f"❌ No tengo permiso de 'Gestionar canales' en **{target.name}**. "
-                "Revisa el rol del bot y los permisos de ese canal."
-            )
-
-        if target.name == nuevo_nombre:
-            return False, "ℹ️ Ese elemento ya tiene ese estilo, no hay nada que cambiar."
-
-        try:
-            await asyncio.wait_for(
-                target.edit(name=nuevo_nombre, reason=f"Fuente aplicada por {interaction.user} ({interaction.user.id})"),
-                timeout=20,
-            )
-            return True, f"🎨 Elemento rediseñado con éxito: **{nuevo_nombre}**"
-        except asyncio.TimeoutError:
-            return False, "⏳ Discord limita los cambios de nombre de un mismo canal (2 cada 10 minutos). Inténtalo más tarde."
-        except discord.Forbidden as e:
-            if getattr(e, "code", None) == 50001:
-                return False, f"❌ **Sin acceso (50001):** revisa los permisos en **{target.name}**."
-            return False, "❌ Discord no me dejó hacer ese cambio: revisa los permisos y la posición del rol del bot."
-        except discord.HTTPException as e:
-            if e.status == 429:
-                return False, "⏳ Límite de Discord alcanzado (2 cambios cada 10 minutos). Inténtalo más tarde."
-            if e.status == 400:
-                return False, "❌ Discord rechazó el nombre resultante (puede ser inválido o demasiado largo)."
-            print(f"⚠️ Error de Discord al renombrar: {e}")
-            return False, "❌ Error de Discord al cambiar el nombre."
-
-    async def _escanear_y_guardar(self, interaction: discord.Interaction, muestra: str,
-                                  nombre_guardar: str, origen: str):
-        if await self._sin_db(interaction):
-            return
-        await interaction.response.defer()
-        try:
-            nombre = normalizar_nombre_fuente(nombre_guardar)
-            mapeo = await self.extraer_mapeo_fuente(muestra, guild_id=interaction.guild_id)
-            await self.guardar_fuente(interaction.guild_id, nombre, mapeo)
-            await interaction.followup.send(f"🧠 Fuente **{nombre}** guardada{origen} ({len(mapeo)} caracteres).")
-        except ErrorFuente as e:
-            await interaction.followup.send(f"❌ {e}")
-        except Exception as e:
-            print(f"⚠️ Error al escanear fuente: {type(e).__name__}: {e}")
-            traceback.print_exc()
-            await interaction.followup.send("❌ Ocurrió un error al procesar la fuente. Inténtalo de nuevo.")
-
-    async def _aplicar(self, interaction: discord.Interaction, elemento, estilo: str, texto_nuevo):
-        if await self._sin_db(interaction):
-            return
-        await interaction.response.defer()
-
-        estilo = estilo.strip().lower()
-        fuentes = await self.cargar_fuentes(interaction.guild_id)
-        if estilo not in fuentes:
-            return await interaction.followup.send(f"❌ Fuente **{estilo}** no encontrada.")
-
-        nombre_final = self.construir_nombre_inteligente(
-            elemento.name, texto_nuevo, fuentes[estilo], es_categoria_o_voz=self.es_categoria_o_voz(elemento)
-        )
-        _, msg = await self.editar_nombre(interaction, elemento, nombre_final)
-        await interaction.followup.send(msg)
-
-    @grupo_escanear.command(name="mensaje", description="Extrae y completa una fuente desde un mensaje")
+    @app_commands.command(name="fuente", description="Panel de gestión de tipografías para canales y categorías")
+    @app_commands.guild_only()
     @app_commands.checks.has_permissions(manage_channels=True)
-    @app_commands.describe(mensaje="Texto escrito con la tipografía que quieres guardar",
-                           nombre_guardar="Nombre con el que se guardará la fuente")
-    async def escanear_mensaje(self, interaction: discord.Interaction,
-                               mensaje: app_commands.Range[str, 1, 100],
-                               nombre_guardar: app_commands.Range[str, 1, 32]):
-        await self._escanear_y_guardar(interaction, mensaje, nombre_guardar, "")
+    async def fuente_cmd(self, interaction: discord.Interaction):
+        if not self.bot.db:
+            return await interaction.response.send_message("❌ Firebase no disponible.", ephemeral=True)
 
-    @grupo_escanear.command(name="canal", description="Extrae e infiere la fuente completa a partir de un canal de texto o voz")
-    @app_commands.checks.has_permissions(manage_channels=True)
-    @app_commands.describe(canal="Canal cuyo nombre usa la tipografía",
-                           nombre_guardar="Nombre con el que se guardará la fuente")
-    async def escanear_canal(self, interaction: discord.Interaction, canal: discord.abc.GuildChannel,
-                             nombre_guardar: app_commands.Range[str, 1, 32]):
-        await self._escanear_y_guardar(interaction, canal.name, nombre_guardar, f" desde **{canal.name}**")
-
-    @grupo_escanear.command(name="categoria", description="Extrae e infiere la fuente completa a partir de una categoría")
-    @app_commands.checks.has_permissions(manage_channels=True)
-    @app_commands.describe(categoria="Categoría cuyo nombre usa la tipografía",
-                           nombre_guardar="Nombre con el que se guardará la fuente")
-    async def escanear_categoria(self, interaction: discord.Interaction, categoria: discord.CategoryChannel,
-                                 nombre_guardar: app_commands.Range[str, 1, 32]):
-        await self._escanear_y_guardar(interaction, categoria.name, nombre_guardar,
-                                       f" desde la categoría **{categoria.name}**")
-
-    @grupo_fuente.command(name="aplicar_canal", description="Aplica una fuente a un canal (texto o voz) manteniendo su nombre actual")
-    @app_commands.checks.has_permissions(manage_channels=True)
-    @app_commands.describe(canal="Canal o categoría a rediseñar", estilo="Fuente guardada que quieres aplicar")
-    @app_commands.autocomplete(estilo=estilo_autocomplete)
-    async def aplicar_canal_cmd(self, interaction: discord.Interaction, canal: discord.abc.GuildChannel, estilo: str):
-        await self._aplicar(interaction, canal, estilo, None)
-
-    @grupo_fuente.command(name="aplicar_renombrar", description="Aplica una fuente y renombra un canal de texto, voz o categoría")
-    @app_commands.checks.has_permissions(manage_channels=True)
-    @app_commands.describe(elemento="Canal o categoría a rediseñar", estilo="Fuente guardada que quieres aplicar",
-                           nuevo_nombre="Nuevo nombre (escríbelo normal, el bot le pone la fuente)")
-    @app_commands.autocomplete(estilo=estilo_autocomplete)
-    async def aplicar_renombrar_cmd(self, interaction: discord.Interaction, elemento: discord.abc.GuildChannel,
-                                    estilo: str, nuevo_nombre: app_commands.Range[str, 1, 100]):
-        await self._aplicar(interaction, elemento, estilo, nuevo_nombre)
-
-    @grupo_fuente.command(name="menu_interactivo", description="Menú interactivo desplegable para rediseñar canales y categorías")
-    @app_commands.checks.has_permissions(manage_channels=True)
-    async def menu_interactivo_cmd(self, interaction: discord.Interaction):
-        if await self._sin_db(interaction):
-            return
-        await interaction.response.defer(ephemeral=True)
-
-        fuentes = await self.cargar_fuentes(interaction.guild_id)
-        if not fuentes:
-            return await interaction.followup.send("📂 No hay tipografías guardadas.", ephemeral=True)
-
-        vista = VistaAplicarElemento(self, interaction.guild_id, fuentes, interaction.user.id)
         embed = discord.Embed(
-            title="🛠️ Panel de Rediseño de Canales y Categorías",
-            description="Selecciona un estilo y el canal/categoría a modificar mediante los menús desplegables.",
+            title="🎨 Panel de Tipografías — Meowly",
+            description=(
+                "**📥 Escanear**: detecta la tipografía de un canal/categoría y la guarda (local + global).\n"
+                "**🎨 Aplicar**: aplica una fuente global o local a un canal/categoría existente.\n"
+                "**📋 Listar**: muestra las fuentes locales y globales.\n"
+                "**👁️ Probar**: vista previa de un texto con una fuente.\n"
+                "**🗑️ Eliminar**: borra una fuente local (las globales solo desde Firestore)."
+            ),
             color=discord.Color.blurple(),
         )
-        await interaction.followup.send(embed=embed, view=vista, ephemeral=True)
-
-    @grupo_fuente.command(name="listar", description="Muestra las tipografías guardadas en el servidor")
-    async def listar_fuentes(self, interaction: discord.Interaction):
-        if await self._sin_db(interaction):
-            return
-        await interaction.response.defer(ephemeral=False)
-
-        fuentes = await self.cargar_fuentes(interaction.guild_id)
-        if not fuentes:
-            return await interaction.followup.send("📂 No hay tipografías guardadas.", ephemeral=False)
-
-        embed = discord.Embed(title="🎨 Tipografías Registradas", color=discord.Color.blue())
-        for nombre, mapeo in list(fuentes.items())[:25]:
-            ejemplo = self.construir_nombre_inteligente("canal-pruebas", None, mapeo, es_categoria_o_voz=False)
-            embed.add_field(name=f"📌 {nombre.capitalize()}"[:256],
-                            value=f"`{ejemplo}` ({len(mapeo)} chars)"[:1024], inline=False)
-
-        await interaction.followup.send(embed=embed, ephemeral=False)
-
-    @grupo_fuente.command(name="probar", description="Muestra una vista previa de una fuente")
-    @app_commands.describe(texto="Texto de prueba", estilo="Fuente guardada que quieres probar")
-    @app_commands.autocomplete(estilo=estilo_autocomplete)
-    async def probar_fuente(self, interaction: discord.Interaction,
-                            texto: app_commands.Range[str, 1, 100], estilo: str):
-        if await self._sin_db(interaction):
-            return
-        await interaction.response.defer()
-
-        fuentes = await self.cargar_fuentes(interaction.guild_id)
-        estilo = estilo.strip().lower()
-        if estilo not in fuentes:
-            return await interaction.followup.send("❌ Fuente inexistente.")
-
-        resultado = self.construir_nombre_inteligente(texto, None, fuentes[estilo], es_categoria_o_voz=True)
-        resultado = resultado.replace("`", "'")
-        await interaction.followup.send(f"👁️ **Vista Previa:** `{resultado}`")
-
-    @grupo_fuente.command(name="eliminar", description="Elimina una fuente guardada")
-    @app_commands.checks.has_permissions(manage_channels=True)
-    @app_commands.describe(nombre="Fuente guardada que quieres eliminar")
-    @app_commands.autocomplete(nombre=estilo_autocomplete)
-    async def eliminar_fuente_cmd(self, interaction: discord.Interaction, nombre: str):
-        if await self._sin_db(interaction):
-            return
-        await interaction.response.defer()
-
-        nombre = nombre.strip().lower()
-        if await self.eliminar_fuente(interaction.guild_id, nombre):
-            await interaction.followup.send(f"🗑️ Tipografía **{nombre}** eliminada de Firebase.")
-        else:
-            await interaction.followup.send(f"❌ No se encontró la fuente **{nombre}**.")
+        embed.set_footer(text="Solo quien ejecutó el comando puede usar este panel.")
+        view = VistaPanelFuente(self, interaction.user.id)
+        await interaction.response.send_message(embed=embed, view=view, ephemeral=True)
 
 
 async def setup(bot):
