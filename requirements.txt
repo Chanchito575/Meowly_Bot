@@ -1,9 +1,7 @@
-discord.py
+discord.py>=2.4.0
 openai>=1.40.0
 groq
 Flask
 aiohttp
 firebase-admin
-duckduckgo_search
-google-cloud-firestore
-grpcio
+ddgs
