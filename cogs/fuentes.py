@@ -15,16 +15,15 @@ try:
 except ImportError:
     firestore = None
 
-MODELO_MISTRAL = os.getenv("MODELO_MISTRAL", "mistral-small-latest")
-MODELO_QWEN = os.getenv("MODELO_QWEN", "Qwen/Qwen2.5-72B-Instruct")
-MODELO_GROQ = os.getenv("MODELO_GROQ", "openai/gpt-oss-120b")
+MODELO_ZAI = os.getenv("MODELO_ZAI", "glm-4-flash")
+MODELO_GROQ = os.getenv("MODELO_GROQ", "openai/gpt-oss-20b")
+MODELO_QWEN = os.getenv("MODELO_QWEN", "Qwen/Qwen2.5-7B-Instruct")
 
-MAX_FUENTES = 25       
-CACHE_TTL = 30.0      
+MAX_FUENTES = 25
+CACHE_TTL = 30.0
 
 
 def leer_key(*nombres: str):
-    """Lee la primera variable de entorno que exista, limpiando espacios, saltos de línea y comillas."""
     for n in nombres:
         v = os.getenv(n)
         if v:
@@ -42,6 +41,7 @@ def describir_error(e: Exception) -> str:
 
 class ErrorFuente(Exception):
     """Error con un mensaje seguro para mostrárselo al usuario."""
+
 
 EMOJI_REGEX = re.compile(
     r"(<a?:\w+:\d+>|[\U00010000-\U0010ffff\u2600-\u27ff\u2300-\u23ff\u2B50\u200d]+)"
@@ -111,6 +111,7 @@ def normalizar_nombre_fuente(nombre: str) -> str:
         )
     return nombre
 
+
 class VistaAplicarElemento(discord.ui.View):
     def __init__(self, cog, guild_id: int, fuentes: dict, autor_id: int):
         super().__init__(timeout=300)
@@ -151,11 +152,6 @@ class VistaAplicarElemento(discord.ui.View):
             return False
         if interaction.user.id != self.autor_id:
             await interaction.response.send_message("❌ Este menú pertenece a otra persona.", ephemeral=True)
-            return False
-        if not (interaction.user.guild_permissions.manage_channels or interaction.permissions.manage_channels):
-            await interaction.response.send_message(
-                "❌ No tienes permisos de 'Gestionar canales' para usar este menú.", ephemeral=True
-            )
             return False
         return True
 
@@ -201,30 +197,37 @@ class VistaAplicarElemento(discord.ui.View):
         )
         _, msg = await self.cog.editar_nombre(interaction, target, nuevo_nombre)
         await interaction.followup.send(msg, ephemeral=True)
-        try:
-            await interaction.edit_original_response(view=self)
-        except discord.HTTPException:
-            pass
+
 
 class Fuentes(commands.Cog):
     def __init__(self, bot):
         self.bot = bot
         self._cache = {}
 
-        def crear(base_url, key):
+        def crear(base_url, key, timeout=25.0):
             if not key:
                 return None
-            return openai.AsyncOpenAI(base_url=base_url, api_key=key, timeout=25.0, max_retries=1)
+            return openai.AsyncOpenAI(base_url=base_url, api_key=key, timeout=timeout, max_retries=1)
 
-        self.groq_client = crear("https://api.groq.com/openai/v1", leer_key("GROQ_API_KEY", "GROQ_KEY"))
-        self.mistral_client = crear("https://api.mistral.ai/v1/", leer_key("MISTRAL_API_KEY", "MISTRAL_KEY"))
+        self.zai_client = crear(
+            "https://api.z.ai/api/coding/paas/v4",
+            leer_key("ZAI_API_KEY", "ZHIPUAI_API_KEY"),
+        )
+        self.groq_client = crear(
+            "https://api.groq.com/openai/v1",
+            leer_key("GROQ_API_KEY", "GROQ_KEY"),
+        )
         self.hf_client = crear(
             "https://router.huggingface.co/v1/",
             leer_key("HF_TOKEN", "HUGGINGFACE_API_KEY", "HF_API_KEY", "QWEN_API_KEY"),
         )
+        self.mistral_client = crear(
+            "https://api.mistral.ai/v1/",
+            leer_key("MISTRAL_API_KEY", "MISTRAL_KEY"),
+        )
 
     async def cog_unload(self):
-        for cliente in (self.groq_client, self.mistral_client, self.hf_client):
+        for cliente in (self.zai_client, self.groq_client, self.hf_client, self.mistral_client):
             if cliente:
                 try:
                     await cliente.close()
@@ -235,6 +238,7 @@ class Fuentes(commands.Cog):
     grupo_escanear = app_commands.Group(
         name="escanear", description="Escanear y guardar tipografías", parent=grupo_fuente
     )
+
     async def cargar_fuentes(self, guild_id: int, usar_cache: bool = True) -> dict:
         if not self.bot.db or not guild_id:
             return {}
@@ -261,6 +265,8 @@ class Fuentes(commands.Cog):
     async def guardar_fuente(self, guild_id: int, nombre: str, mapeo: dict) -> None:
         if not self.bot.db or not guild_id or not mapeo:
             raise ErrorFuente("No se pudo guardar: Firebase no está disponible.")
+        if firestore is None:
+            raise ErrorFuente("No se pudo guardar: firebase-admin no está instalado.")
 
         existentes = await self.cargar_fuentes(guild_id, usar_cache=False)
         if nombre not in existentes and len(existentes) >= MAX_FUENTES:
@@ -390,37 +396,90 @@ class Fuentes(commands.Cog):
         cambiadas = sum(1 for k, v in limpio.items() if k != v)
         return limpio if letras >= 20 and cambiadas >= 15 else {}
 
-    async def _pedir_mapeo_a_ia(self, ejemplo_texto: str) -> dict:
+    async def _mapear_con_zai(self, ejemplo_texto: str) -> dict:
+        if not self.zai_client:
+            return {}
         prompt = (
             f"Analiza la fuente en: '{ejemplo_texto}'. Genera un JSON mapeando todo el abecedario "
             "(a-z, A-Z) y números (0-9) en este estilo tipográfico.\n"
             "Responde ÚNICAMENTE el JSON sin bloques de código ni explicaciones.\n"
             'Ejemplo: {"a": "𝗮", "A": "𝗔"}'
         )
-        proveedores = (
-            ("Groq", self.groq_client, MODELO_GROQ),
-            ("Mistral", self.mistral_client, MODELO_MISTRAL),
-            ("Qwen", self.hf_client, MODELO_QWEN),
-        )
-        for nombre, cliente, modelo in proveedores:
-            if not cliente:
-                continue
-            try:
-                resp = await cliente.chat.completions.create(
-                    model=modelo,
-                    messages=[{"role": "user", "content": prompt}],
-                    temperature=0.1,
-                    max_tokens=3000,
-                )
-                res = self._validar_mapeo(self._limpiar_json(resp.choices[0].message.content))
-                if res:
-                    return res
-                print(f"⚠️ Fuentes/{nombre}: la respuesta no trajo un mapeo válido.")
-            except Exception as e:
-                print(f"⚠️ Fuentes/{nombre} falló: {describir_error(e)}")
+        try:
+            resp = await self.zai_client.chat.completions.create(
+                model=MODELO_ZAI,
+                messages=[{"role": "user", "content": prompt}],
+                temperature=0.1,
+                max_tokens=3000,
+            )
+            mapeo = self._validar_mapeo(self._limpiar_json(resp.choices[0].message.content))
+            if mapeo:
+                print(f"🧠 Zai generó un mapeo de {len(mapeo)} caracteres.")
+                return mapeo
+            print("⚠️ Zai no devolvió un mapeo válido.")
+        except Exception as e:
+            print(f"⚠️ Zai falló: {describir_error(e)}")
         return {}
 
-    async def extraer_mapeo_fuente(self, ejemplo_texto: str) -> dict:
+    async def _comparar_con_groq(self, mapeo_nuevo: dict, fuentes_existentes: dict) -> str | None:
+        if not self.groq_client or not fuentes_existentes:
+            return None
+
+        for nombre, mapeo_viejo in fuentes_existentes.items():
+            if mapeo_nuevo == mapeo_viejo:
+                print(f"🔍 Coincidencia exacta con la fuente existente '{nombre}'.")
+                return nombre
+
+        prompt = (
+            "Compara el siguiente mapeo de fuente NUEVO con la lista de mapeos EXISTENTES.\n"
+            "Determina si el NUEVO es esencialmente el mismo estilo que alguno de los EXISTENTES.\n"
+            "Responde ÚNICAMENTE con el nombre de la fuente existente si coincide, o 'NINGUNA' si no.\n\n"
+            f"NUEVO:\n{json.dumps(mapeo_nuevo, ensure_ascii=False)}\n\n"
+            f"EXISTENTES:\n{json.dumps({k: v for k, v in fuentes_existentes.items()}, ensure_ascii=False)}"
+        )
+        try:
+            resp = await self.groq_client.chat.completions.create(
+                model=MODELO_GROQ,
+                messages=[{"role": "user", "content": prompt}],
+                temperature=0.0,
+                max_tokens=200,
+            )
+            texto = resp.choices[0].message.content.strip()
+            for nombre in fuentes_existentes:
+                if nombre.lower() in texto.lower():
+                    print(f"🔍 Groq determinó que coincide con '{nombre}'.")
+                    return nombre
+            print("🔍 Groq determinó que no coincide con ninguna fuente existente.")
+        except Exception as e:
+            print(f"⚠️ Groq falló en la comparación: {describir_error(e)}")
+        return None
+
+    async def _mapear_con_qwen(self, ejemplo_texto: str) -> dict:
+        if not self.hf_client:
+            return {}
+        prompt = (
+            f"Analiza la fuente en: '{ejemplo_texto}'. Genera un JSON mapeando todo el abecedario "
+            "(a-z, A-Z) y números (0-9) en este estilo tipográfico.\n"
+            "Responde ÚNICAMENTE el JSON sin bloques de código ni explicaciones.\n"
+            'Ejemplo: {"a": "𝗮", "A": "𝗔"}'
+        )
+        try:
+            resp = await self.hf_client.chat.completions.create(
+                model=MODELO_QWEN,
+                messages=[{"role": "user", "content": prompt}],
+                temperature=0.1,
+                max_tokens=3000,
+            )
+            mapeo = self._validar_mapeo(self._limpiar_json(resp.choices[0].message.content))
+            if mapeo:
+                print(f"🧠 Qwen generó un mapeo de {len(mapeo)} caracteres.")
+                return mapeo
+            print("⚠️ Qwen no devolvió un mapeo válido.")
+        except Exception as e:
+            print(f"⚠️ Qwen falló: {describir_error(e)}")
+        return {}
+
+    async def extraer_mapeo_fuente(self, ejemplo_texto: str, guild_id: int = None) -> dict:
         mapeo_detectado = {}
         for char in ejemplo_texto:
             mapa_extrapolado = generar_bloque_completo(char)
@@ -445,15 +504,26 @@ class Fuentes(commands.Cog):
                 "Escribe algo con la fuente que quieres guardar, por ejemplo 𝗠𝗲𝗼𝘄𝗹𝘆 o ᴍᴇᴏᴡʟʏ."
             )
 
-        res = await self._pedir_mapeo_a_ia(ejemplo_texto)
-        if res:
-            return res
+        mapeo_zai = await self._mapear_con_zai(ejemplo_texto)
+        if mapeo_zai:
+            if guild_id:
+                fuentes_existentes = await self.cargar_fuentes(guild_id, usar_cache=False)
+                if fuentes_existentes:
+                    coincidencia = await self._comparar_con_groq(mapeo_zai, fuentes_existentes)
+                    if coincidencia:
+                        return fuentes_existentes[coincidencia]
+            return mapeo_zai
+
+        mapeo_qwen = await self._mapear_con_qwen(ejemplo_texto)
+        if mapeo_qwen:
+            return mapeo_qwen
+
         if mapeo_detectado:
             return mapeo_detectado
+
         raise ErrorFuente("No se pudo detectar ni extrapolar la tipografía.")
 
     async def editar_nombre(self, interaction: discord.Interaction, target, nuevo_nombre: str):
-        """Renombra un canal/categoría comprobando permisos. Devuelve (ok, mensaje)."""
         if not isinstance(target, TIPOS_EDITABLES):
             return False, "❌ Ese tipo de elemento no se puede rediseñar (solo canales, foros, escenarios y categorías)."
 
@@ -501,7 +571,7 @@ class Fuentes(commands.Cog):
         await interaction.response.defer()
         try:
             nombre = normalizar_nombre_fuente(nombre_guardar)
-            mapeo = await self.extraer_mapeo_fuente(muestra)
+            mapeo = await self.extraer_mapeo_fuente(muestra, guild_id=interaction.guild_id)
             await self.guardar_fuente(interaction.guild_id, nombre, mapeo)
             await interaction.followup.send(f"🧠 Fuente **{nombre}** guardada{origen} ({len(mapeo)} caracteres).")
         except ErrorFuente as e:
