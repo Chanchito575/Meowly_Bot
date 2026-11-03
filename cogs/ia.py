@@ -24,7 +24,7 @@ MINUTOS_EXPIRACION_MEMORIA = 40
 
 MODELO_GROQ = os.getenv("MODELO_GROQ", "openai/gpt-oss-120b")
 MODELO_GROQ_RESPALDO = os.getenv("MODELO_GROQ_RESPALDO", "openai/gpt-oss-20b")
-MODELO_QWEN = os.getenv("MODELO_QWEN", "qwen/qwen3-coder:free")
+MODELO_QWEN = os.getenv("MODELO_QWEN", "qwen/qwen3.6-plus:free")
 
 USAR_ENSAMBLE = os.getenv("MODO_ENSAMBLE", "0") == "1"
 COOLDOWN_429_SEG = 60
