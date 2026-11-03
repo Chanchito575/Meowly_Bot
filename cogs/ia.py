@@ -9,7 +9,6 @@ import discord
 from discord import app_commands
 from discord.ext import commands
 
-# Import robusto para ddgs (nuevo nombre de duckduckgo_search)
 try:
     from ddgs import DDGS
 except ImportError:
@@ -18,24 +17,20 @@ except ImportError:
 import openai
 from groq import AsyncGroq
 
-# --- Configuración de memoria ---
 MAX_USUARIOS_MEMORIA = 100
 MAX_MENSAJES_HISTORIAL = 12
 MAX_CARACTERES_HISTORIAL = 6000
 MINUTOS_EXPIRACION_MEMORIA = 40
 
-# --- Configuración de modelos de IA ---
 MODELO_GROQ = os.getenv("MODELO_GROQ", "openai/gpt-oss-120b")
 MODELO_GROQ_RESPALDO = os.getenv("MODELO_GROQ_RESPALDO", "openai/gpt-oss-20b")
-MODELO_MISTRAL = os.getenv("MODELO_MISTRAL", "mistral-small-latest")
-MODELO_QWEN = os.getenv("MODELO_QWEN", "Qwen/Qwen2.5-72B-Instruct")
+MODELO_QWEN = os.getenv("MODELO_QWEN", "qwen/qwen3-next-80b-a3b-instruct:free")
 
 USAR_ENSAMBLE = os.getenv("MODO_ENSAMBLE", "0") == "1"
 COOLDOWN_429_SEG = 60
 
-# --- Límites para los mensajes de Discord ---
-LIMITE_CARACTERES_RESPUESTA = 3800  # Tope total para evitar el límite de 4000 de Discord
-LIMITE_CARACTERES_PARTE = 1900      # Tope por mensaje individual
+LIMITE_CARACTERES_RESPUESTA = 3800
+LIMITE_CARACTERES_PARTE = 1900
 
 SYSTEM_PROMPT_BASE = (
     "Eres Meowly, un asistente inteligente, amigable y carismático integrado en Discord. "
@@ -127,12 +122,6 @@ class HistorialIA:
             self.mensajes.append({"role": rol, "content": contenido})
             self.ultimo_uso = datetime.now(timezone.utc)
 
-    # NOTA: Este método ya no se usa automáticamente.
-    # La expiración se maneja en actualizar_y_obtener().
-    async def limpiar(self):
-        async with self.lock:
-            self.mensajes.clear()
-
 
 memoria_ia: dict[int, HistorialIA] = {}
 memoria_lock = asyncio.Lock()
@@ -172,11 +161,9 @@ def necesita_busqueda(mensaje: str) -> bool:
 
 
 def _ejecutar_busqueda_ddg(consulta: str, max_reintentos: int = 2) -> str:
-    """Ejecuta la búsqueda en DuckDuckGo con reintentos y backoff exponencial."""
     for intento in range(max_reintentos):
         try:
             with DDGS() as ddgs:
-                # backend="auto" deja que la librería elija el mejor método.
                 resp = ddgs.text(consulta, region="wt-wt", max_results=4, backend="auto")
                 if resp:
                     resultados = list(resp)
@@ -191,7 +178,6 @@ def _ejecutar_busqueda_ddg(consulta: str, max_reintentos: int = 2) -> str:
         except Exception as e:
             print(f"⚠️ Error en búsqueda web (intento {intento + 1}/{max_reintentos}): {e}")
             if intento < max_reintentos - 1:
-                # Espera exponencial: 1s, 2s...
                 time.sleep(2 ** intento)
     return ""
 
@@ -205,39 +191,26 @@ async def buscar_en_web(consulta: str) -> str:
 
 
 def fragmentar_texto_inteligente(texto: str) -> List[str]:
-    """
-    Fragmenta el texto en máximo 2 partes, respetando el límite total
-    y priorizando cortes en párrafos, líneas o finales de oración.
-    """
     if len(texto) <= LIMITE_CARACTERES_RESPUESTA:
         return [texto]
 
-    # Si es muy largo, truncar para no exceder el límite total de 2 mensajes
     texto = texto[:LIMITE_CARACTERES_RESPUESTA]
 
-    # Buscar el mejor punto de corte para la primera parte
-    corte = -1
-    # Prioridad 1: doble salto de línea (párrafo)
     corte = texto.rfind("\n\n", 0, LIMITE_CARACTERES_PARTE)
     if corte == -1:
-        # Prioridad 2: salto de línea simple
         corte = texto.rfind("\n", 0, LIMITE_CARACTERES_PARTE)
     if corte == -1:
-        # Prioridad 3: final de oración
         corte = texto.rfind(". ", 0, LIMITE_CARACTERES_PARTE)
         if corte != -1:
-            corte += 1  # Incluir el punto
+            corte += 1
     if corte == -1:
-        # Prioridad 4: espacio (para no cortar palabras)
         corte = texto.rfind(" ", 0, LIMITE_CARACTERES_PARTE)
     if corte == -1:
-        # Último recurso: corte duro
         corte = LIMITE_CARACTERES_PARTE
 
     parte1 = texto[:corte].strip()
     parte2 = texto[corte:].strip()
 
-    # Si la segunda parte es muy corta, no dividir
     if len(parte2) < 50:
         return [parte1 + " " + parte2]
 
@@ -260,18 +233,17 @@ class IA(commands.Cog):
         self.pausa_hasta = {}
 
         groq_key = leer_key("GROQ_API_KEY", "GROQ_KEY")
-        mistral_key = leer_key("MISTRAL_API_KEY", "MISTRAL_KEY")
-        hf_key = leer_key("HF_TOKEN", "HUGGINGFACE_API_KEY", "HF_API_KEY", "QWEN_API_KEY")
+        openrouter_key = leer_key("OPENROUTER_API_KEY", "HF_TOKEN")
 
-        print(f"🔑 Groq: {'✅' if groq_key else '❌'} | Mistral: {'✅' if mistral_key else '❌'} | Qwen: {'✅' if hf_key else '❌'}")
+        print(f"🔑 Groq: {'✅' if groq_key else '❌'} | Qwen/OpenRouter: {'✅' if openrouter_key else '❌'}")
 
         self.groq_client = AsyncGroq(api_key=groq_key, timeout=30.0) if groq_key else None
-        self.mistral_client = openai.AsyncOpenAI(
-            base_url="https://api.mistral.ai/v1/", api_key=mistral_key, timeout=30.0
-        ) if mistral_key else None
         self.hf_client = openai.AsyncOpenAI(
-            base_url="https://router.huggingface.co/v1/", api_key=hf_key, timeout=30.0
-        ) if hf_key else None
+            base_url="https://openrouter.ai/api/v1",
+            api_key=openrouter_key,
+            timeout=30.0,
+        ) if openrouter_key else None
+        self.mistral_client = None
 
     def _system_prompt(self, info_web: str = "") -> str:
         owner_id = getattr(self.bot, "owner_id_custom", 1481047586457518141)
@@ -301,22 +273,6 @@ class IA(commands.Cog):
             print(f"⚠️ Groq ({modelo}) falló: {self.ultimos_errores['groq']}")
             return None
 
-    async def _consultar_mistral(self, messages: list) -> Optional[str]:
-        if not self.mistral_client:
-            return None
-        try:
-            resp = await self.mistral_client.chat.completions.create(
-                model=MODELO_MISTRAL,
-                messages=normalizar_mensajes(messages),
-                temperature=0.6,
-                max_tokens=2000,
-            )
-            return resp.choices[0].message.content
-        except Exception as e:
-            self.ultimos_errores["mistral"] = describir_error(e)
-            print(f"⚠️ Mistral falló: {self.ultimos_errores['mistral']}")
-            return None
-
     async def _consultar_qwen(self, messages: list) -> Optional[str]:
         if not self.hf_client:
             return None
@@ -339,8 +295,6 @@ class IA(commands.Cog):
         if self.groq_client:
             intentos.append(("groq", MODELO_GROQ, self._consultar_groq))
             intentos.append(("groq", MODELO_GROQ_RESPALDO, self._consultar_groq))
-        if self.mistral_client:
-            intentos.append(("mistral", MODELO_MISTRAL, self._consultar_mistral))
         if self.hf_client:
             intentos.append(("qwen", MODELO_QWEN, self._consultar_qwen))
 
@@ -363,22 +317,22 @@ class IA(commands.Cog):
 
     async def _ensamble(self, messages: list) -> str:
         resultados = await asyncio.gather(
-            self._consultar_mistral(messages),
+            self._consultar_groq(messages, MODELO_GROQ),
             self._consultar_qwen(messages),
             return_exceptions=True,
         )
-        texto_mistral = resultados[0] if isinstance(resultados[0], str) else None
+        texto_groq = resultados[0] if isinstance(resultados[0], str) else None
         texto_qwen = resultados[1] if isinstance(resultados[1], str) else None
 
-        if not texto_mistral and not texto_qwen:
+        if not texto_groq and not texto_qwen:
             return await self._cadena_respaldo(messages)
-        if texto_mistral and not texto_qwen:
-            return texto_mistral
-        if texto_qwen and not texto_mistral:
+        if texto_groq and not texto_qwen:
+            return texto_groq
+        if texto_qwen and not texto_groq:
             return texto_qwen
 
         if not self.groq_client:
-            return texto_mistral or texto_qwen
+            return texto_groq or texto_qwen
 
         prompt_juez = [
             {"role": "system", "content": (
@@ -390,7 +344,7 @@ class IA(commands.Cog):
             )},
             {"role": "user", "content": (
                 f"Pregunta original:\n{messages[-1]['content']}\n\n"
-                f"Opción A (Mistral):\n{texto_mistral}\n\n"
+                f"Opción A (Groq):\n{texto_groq}\n\n"
                 f"Opción B (Qwen):\n{texto_qwen}\n\n"
                 "Respuesta final óptima:"
             )},
@@ -405,7 +359,7 @@ class IA(commands.Cog):
             return resp.choices[0].message.content
         except Exception as e:
             print(f"⚠️ Juez Groq falló: {describir_error(e)}")
-            return texto_mistral or texto_qwen
+            return texto_groq or texto_qwen
 
     async def consultar(self, historial: list, info_web: str = "") -> str:
         system = self._system_prompt(info_web)
@@ -415,7 +369,7 @@ class IA(commands.Cog):
             return await self._ensamble(mensajes)
         return await self._cadena_respaldo(mensajes)
 
-    @app_commands.command(name="ia", description="Habla con Meowly (Groq → Mistral → Qwen con respaldo)")
+    @app_commands.command(name="ia", description="Habla con Meowly (Groq → Qwen con respaldo)")
     @app_commands.describe(mensaje="Tu pregunta o consulta")
     async def ia(self, interaction: discord.Interaction, mensaje: str):
         await interaction.response.defer()
