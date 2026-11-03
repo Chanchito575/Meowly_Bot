@@ -20,9 +20,9 @@ HTML_TEMPLATE = """<!DOCTYPE html>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <meta name="theme-color" content="#08070b">
-    <meta name="description" content="Meowly: bot de Discord con IA multi-proveedor (Groq, Mistral, Qwen y Zai), búsqueda web en tiempo real y paneles para crear, aplicar y escanear tipografías en canales y categorías.">
+    <meta name="description" content="Meowly: bot de Discord con IA de respaldo automático (Groq y Qwen), búsqueda web en tiempo real y paneles para crear, aplicar y escanear tipografías en canales y categorías.">
     <meta property="og:title" content="Meowly Bot · Asistente con IA para Discord">
-    <meta property="og:description" content="IA con respaldo automático entre 4 proveedores, búsqueda web y paneles interactivos de tipografías para tu servidor.">
+    <meta property="og:description" content="IA con respaldo automático entre Groq y Qwen, búsqueda web y paneles interactivos de tipografías para tu servidor.">
     <meta property="og:type" content="website">
     <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'%3E%3Ctext y='.9em' font-size='90'%3E%F0%9F%90%B1%3C/text%3E%3C/svg%3E">
     <title>Meowly Bot · IA y tipografías para Discord</title>
@@ -111,7 +111,7 @@ HTML_TEMPLATE = """<!DOCTYPE html>
 
         /* Stack de IA */
         .stack {
-            display: grid; grid-template-columns: repeat(auto-fit, minmax(160px, 1fr)); gap: 10px;
+            display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 10px;
             margin-top: 4px;
         }
         .proveedor {
@@ -124,9 +124,8 @@ HTML_TEMPLATE = """<!DOCTYPE html>
         .proveedor .nombre { font-size: .9rem; font-weight: 650; }
         .proveedor .rol { font-size: .74rem; color: var(--tenue); margin-top: 1px; }
         .p-1 { background: #f97316; box-shadow: 0 0 8px rgba(249,115,22,.6); }
-        .p-2 { background: #eab308; box-shadow: 0 0 8px rgba(234,179,8,.6); }
-        .p-3 { background: #3b82f6; box-shadow: 0 0 8px rgba(59,130,246,.6); }
-        .p-4 { background: #22c55e; box-shadow: 0 0 8px rgba(34,197,94,.6); }
+        .p-2 { background: #3b82f6; box-shadow: 0 0 8px rgba(59,130,246,.6); }
+        .p-3 { background: #22c55e; box-shadow: 0 0 8px rgba(34,197,94,.6); }
 
         .rejilla { display: grid; grid-template-columns: repeat(auto-fit, minmax(240px, 1fr)); gap: 14px; }
         .tarjeta {
@@ -183,7 +182,7 @@ HTML_TEMPLATE = """<!DOCTYPE html>
             <h1>Meowly Bot</h1>
             <div class="estado"><span class="punto"></span> Servidor activo</div>
             <p class="lema">
-                Un asistente para Discord con IA de respaldo automático entre 4 proveedores,
+                Un asistente para Discord con IA de respaldo automático entre Groq y Qwen,
                 búsqueda web en tiempo real y paneles interactivos para decorar tu servidor.
             </p>
             <a class="boton" href="__ENLACE__" target="_blank" rel="noopener noreferrer">✨ Añadir Meowly a tu servidor</a>
@@ -203,19 +202,12 @@ HTML_TEMPLATE = """<!DOCTYPE html>
                 <div class="proveedor">
                     <span class="punto-ia p-2"></span>
                     <div>
-                        <div class="nombre">Mistral</div>
-                        <div class="rol">Respaldo 1</div>
+                        <div class="nombre">Qwen</div>
+                        <div class="rol">Respaldo · OpenRouter</div>
                     </div>
                 </div>
                 <div class="proveedor">
                     <span class="punto-ia p-3"></span>
-                    <div>
-                        <div class="nombre">Qwen</div>
-                        <div class="rol">Respaldo 2</div>
-                    </div>
-                </div>
-                <div class="proveedor">
-                    <span class="punto-ia p-4"></span>
                     <div>
                         <div class="nombre">Zai · GLM</div>
                         <div class="rol">Tipografías</div>
@@ -276,14 +268,17 @@ HTML_TEMPLATE = """<!DOCTYPE html>
             <div class="chips">
                 <span class="chip">Ver canales</span>
                 <span class="chip">Enviar mensajes</span>
+                <span class="chip">Gestionar mensajes</span>
                 <span class="chip">Insertar enlaces</span>
                 <span class="chip">Leer historial de mensajes</span>
                 <span class="chip">Gestionar canales</span>
             </div>
             <p class="aviso">
-                No pide permisos de administrador, ni de expulsar o banear, ni de gestionar mensajes.
-                Los comandos de tipografías solo los puede usar quien tenga <b>Gestionar canales</b> en tu servidor,
-                y siempre respetando los permisos por canal.
+                No pide permisos de administrador, ni de expulsar o banear. Los comandos de tipografías
+                solo los puede usar quien tenga <b>Gestionar canales</b> en tu servidor, y siempre
+                respetando los permisos por canal. <b>Gestionar mensajes</b> se incluye para que el bot
+                pueda manejar sus propios mensajes largos (por ejemplo, si necesita limpiar respuestas
+                partidas en dos).
             </p>
         </section>
 
