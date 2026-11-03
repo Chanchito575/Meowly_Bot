@@ -16,6 +16,10 @@ except ImportError:
     firebase_admin = None
     print("⚠️ firebase-admin no está instalado. El bot funcionará sin base de datos.")
 
+
+COGS_ESPERADOS = ("ia", "fuentes", "utilidades")
+
+
 def limpiar_env(valor):
     """Quita espacios, saltos de línea y comillas que se cuelan al pegar variables en Render."""
     if valor is None:
@@ -41,6 +45,14 @@ CLAVES_IA = {
     "Groq": ("GROQ_API_KEY", "GROQ_KEY"),
     "Mistral": ("MISTRAL_API_KEY", "MISTRAL_KEY"),
     "Qwen (HF)": ("HF_TOKEN", "HUGGINGFACE_API_KEY", "HF_API_KEY", "QWEN_API_KEY"),
+    "Zai (GLM)": ("ZAI_API_KEY", "ZHIPUAI_API_KEY"),
+}
+
+MODELOS_IA = {
+    "Groq": os.getenv("MODELO_GROQ", "openai/gpt-oss-120b"),
+    "Mistral": os.getenv("MODELO_MISTRAL", "mistral-small-latest"),
+    "Qwen (HF)": os.getenv("MODELO_QWEN", "Qwen/Qwen2.5-72B-Instruct"),
+    "Zai (GLM)": os.getenv("MODELO_ZAI", "glm-4-flash"),
 }
 
 
@@ -48,8 +60,13 @@ def mostrar_estado_claves():
     partes = []
     for nombre, variables in CLAVES_IA.items():
         hay = any(limpiar_env(os.getenv(v)) for v in variables)
-        partes.append(f"{nombre} {'✅' if hay else '❌'}")
-    print("🔑 Llaves de IA detectadas: " + " | ".join(partes))
+        modelo = MODELOS_IA.get(nombre, "?")
+        icono = "✅" if hay else "❌"
+        partes.append(f"{icono} {nombre} (`{modelo}`)")
+    print("🔑 APIs de IA:")
+    for p in partes:
+        print(f"   {p}")
+
 
 def conectar_firebase():
     if firebase_admin is None:
@@ -61,7 +78,7 @@ def conectar_firebase():
         return None
 
     try:
-        b64_credentials += "=" * (-len(b64_credentials) % 4)  
+        b64_credentials += "=" * (-len(b64_credentials) % 4)
         decoded_json = base64.b64decode(b64_credentials).decode("utf-8")
         cred_dict = json.loads(decoded_json)
 
@@ -89,13 +106,14 @@ intents = discord.Intents.default()
 intents.message_content = True
 intents.members = limpiar_env(os.getenv("INTENT_MEMBERS")) == "1"
 
+
 class MiBot(commands.Bot):
     def __init__(self):
         super().__init__(
             command_prefix=".",
             intents=intents,
             help_command=None,
-            owner_id=MI_DISCORD_ID,  
+            owner_id=MI_DISCORD_ID,
             allowed_mentions=discord.AllowedMentions(
                 everyone=False, roles=False, users=True, replied_user=True
             ),
@@ -108,36 +126,44 @@ class MiBot(commands.Bot):
     async def setup_hook(self):
         carpeta = os.path.join(os.path.dirname(os.path.abspath(__file__)), "cogs")
 
-        if os.path.isdir(carpeta):
-            for filename in sorted(os.listdir(carpeta)):
-                if (
-                    not filename.endswith(".py")
-                    or filename.startswith("_")
-                    or filename.endswith("_2.py")
-                ):
-                    continue
-                nombre = filename[:-3]
-                try:
-                    await self.load_extension(f"cogs.{nombre}")
-                    self.cogs_cargados.append(nombre)
-                    print(f"📦 Cog cargado: {nombre}")
-                except Exception as e:
-                    self.cogs_fallidos.append(nombre)
-                    print(f"❌ Error al cargar el cog {filename}: {type(e).__name__}: {e}")
-                    traceback.print_exc()
-        else:
+        if not os.path.isdir(carpeta):
             print("❌ No se encontró la carpeta 'cogs'.")
+            return
 
+        for filename in sorted(os.listdir(carpeta)):
+            if (
+                not filename.endswith(".py")
+                or filename.startswith("_")
+                or filename.endswith("_2.py")
+            ):
+                continue
+            nombre = filename[:-3]
+            try:
+                await self.load_extension(f"cogs.{nombre}")
+                self.cogs_cargados.append(nombre)
+                print(f"📦 Cog cargado: {nombre}")
+            except Exception as e:
+                self.cogs_fallidos.append(nombre)
+                print(f"❌ Error al cargar el cog {filename}: {type(e).__name__}: {e}")
+                traceback.print_exc()
+
+        faltantes = [c for c in COGS_ESPERADOS if c not in self.cogs_cargados]
+        if faltantes:
+            print(f"⚠️ Cogs esperados que NO se cargaron: {', '.join(faltantes)}")
         if self.cogs_fallidos:
             print(f"⚠️ Cogs con error: {', '.join(self.cogs_fallidos)}")
 
         try:
             synced = await self.tree.sync()
-            print(f"🔁 {len(synced)} comandos Slash sincronizados.")
+            print(f"🔁 {len(synced)} comandos Slash sincronizados:")
+            for cmd in synced:
+                print(f"   • /{cmd.name}")
         except Exception as e:
             print(f"❌ Error al sincronizar comandos Slash: {type(e).__name__}: {e}")
 
+
 bot = MiBot()
+
 
 @bot.tree.error
 async def on_app_command_error(interaction: discord.Interaction, error: app_commands.AppCommandError):
@@ -182,16 +208,19 @@ async def on_command_error(ctx: commands.Context, error: commands.CommandError):
         return
     print(f"⚠️ Error en comando de prefijo: {type(error).__name__}: {error}")
 
+
 @bot.event
 async def on_ready():
     await bot.change_presence(
         status=discord.Status.online,
-        activity=discord.Game(name="/ia | Sistema seguro"),
+        activity=discord.Game(name="/help | Meowly"),
     )
-    print(f"✅ Bot conectado con éxito como {bot.user} en {len(bot.guilds)} servidor(es)")
-    print(f"👑 Propietario configurado (ID): {bot.owner_id_custom}")
+    print(f"✅ Bot conectado como {bot.user} en {len(bot.guilds)} servidor(es)")
+    print(f"👑 Propietario configurado: {bot.owner_id_custom}")
     print(f"🗄️ Base de datos: {'conectada' if bot.db else 'NO disponible'}")
+    print(f"📦 Cogs activos: {', '.join(bot.cogs_cargados) if bot.cogs_cargados else 'ninguno'}")
     mostrar_estado_claves()
+
 
 def main():
     token = limpiar_env(os.getenv("DISCORD_TOKEN"))
