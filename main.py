@@ -43,16 +43,14 @@ MI_DISCORD_ID = leer_entero_env("OWNER_ID", 1481047586457518141)
 
 CLAVES_IA = {
     "Groq": ("GROQ_API_KEY", "GROQ_KEY"),
-    "Mistral": ("MISTRAL_API_KEY", "MISTRAL_KEY"),
-    "Qwen (HF)": ("HF_TOKEN", "HUGGINGFACE_API_KEY", "HF_API_KEY", "QWEN_API_KEY"),
+    "Qwen (OpenRouter)": ("OPENROUTER_API_KEY", "HF_TOKEN"),
     "Zai (GLM)": ("ZAI_API_KEY", "ZHIPUAI_API_KEY"),
 }
 
 MODELOS_IA = {
     "Groq": os.getenv("MODELO_GROQ", "openai/gpt-oss-120b"),
-    "Mistral": os.getenv("MODELO_MISTRAL", "mistral-small-latest"),
-    "Qwen (HF)": os.getenv("MODELO_QWEN", "Qwen/Qwen2.5-72B-Instruct"),
-    "Zai (GLM)": os.getenv("MODELO_ZAI", "glm-4-flash"),
+    "Qwen (OpenRouter)": os.getenv("MODELO_QWEN", "qwen/qwen3-next-80b-a3b-instruct:free"),
+    "Zai (GLM)": os.getenv("MODELO_ZAI", "glm-4.7-flash"),
 }
 
 
