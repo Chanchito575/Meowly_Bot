@@ -17,7 +17,7 @@ except Exception as _e:
 OWNER_ID_POR_DEFECTO = 1481047586457518141
 
 MODELO_GROQ = os.getenv("MODELO_GROQ", "openai/gpt-oss-120b")
-MODELO_QWEN = os.getenv("MODELO_QWEN", "qwen/qwen3-next-80b-a3b-instruct:free")
+MODELO_QWEN = os.getenv("MODELO_QWEN", "qwen/qwen3-coder:free")
 MODELO_ZAI = os.getenv("MODELO_ZAI", "glm-4.7-flash")
 
 PERMISOS_BOT = (
