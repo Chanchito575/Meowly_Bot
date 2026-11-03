@@ -176,7 +176,7 @@ class Utilidades(commands.Cog):
                     messages=[{"role": "user", "content": "Responde solo: ok"}],
                     max_tokens=5,
                 ),
-                timeout=15,
+                timeout=30,
             )
             if resp and resp.choices:
                 return f"✅ **{nombre}** (`{modelo}`): funciona"
