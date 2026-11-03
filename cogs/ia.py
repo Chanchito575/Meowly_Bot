@@ -8,22 +8,57 @@ from datetime import datetime, timezone, timedelta
 import discord
 from discord import app_commands
 from discord.ext import commands
-from duckduckgo_search import DDGS
+
+# Import robusto para ddgs (nuevo nombre de duckduckgo_search)
+try:
+    from ddgs import DDGS
+except ImportError:
+    from duckduckgo_search import DDGS
 
 import openai
 from groq import AsyncGroq
 
+# --- Configuración de memoria ---
 MAX_USUARIOS_MEMORIA = 100
-MODELO_QWEN = os.getenv("MODELO_QWEN", "Qwen/Qwen2.5-72B-Instruct")
+MAX_MENSAJES_HISTORIAL = 12
+MAX_CARACTERES_HISTORIAL = 6000
+MINUTOS_EXPIRACION_MEMORIA = 40
+
+# --- Configuración de modelos de IA ---
+MODELO_GROQ = os.getenv("MODELO_GROQ", "openai/gpt-oss-120b")
+MODELO_GROQ_RESPALDO = os.getenv("MODELO_GROQ_RESPALDO", "openai/gpt-oss-20b")
 MODELO_MISTRAL = os.getenv("MODELO_MISTRAL", "mistral-small-latest")
-MODELO_JUEZ = os.getenv("MODELO_GROQ", "openai/gpt-oss-120b")
-MODELO_GROQ_RESPALDO = "openai/gpt-oss-20b"
+MODELO_QWEN = os.getenv("MODELO_QWEN", "Qwen/Qwen2.5-72B-Instruct")
+
 USAR_ENSAMBLE = os.getenv("MODO_ENSAMBLE", "0") == "1"
 COOLDOWN_429_SEG = 60
 
+# --- Límites para los mensajes de Discord ---
+LIMITE_CARACTERES_RESPUESTA = 3800  # Tope total para evitar el límite de 4000 de Discord
+LIMITE_CARACTERES_PARTE = 1900      # Tope por mensaje individual
+
+SYSTEM_PROMPT_BASE = (
+    "Eres Meowly, un asistente inteligente, amigable y carismático integrado en Discord. "
+    "Tu objetivo es dar respuestas **claras, útiles y bien razonadas**.\n\n"
+    "## Reglas de razonamiento\n"
+    "1. Antes de responder, piensa internamente paso a paso: identifica qué se pregunta, "
+    "qué información tienes y qué información falta.\n"
+    "2. Si la pregunta es ambigua, responde con la interpretación más razonable y ofrece "
+    "una breve aclaración al final.\n"
+    "3. Si no sabes algo con certeza, dilo claramente en lugar de inventar.\n"
+    "4. Usa el contexto de la conversación si es relevante, pero no repitas lo ya dicho.\n"
+    "5. Si hay información web disponible, úsala como fuente prioritaria y menciónala.\n\n"
+    "## Formato\n"
+    "- Usa Markdown de Discord: **negrita**, *cursiva*, `código`, listas y bloques de código.\n"
+    "- Sé conciso por defecto. Si el tema lo requiere, extiéndete con estructura clara.\n"
+    "- No uses tablas (Discord no las renderiza bien).\n"
+    "- Emojis con moderación, solo si aportan.\n\n"
+    "## Identidad\n"
+    "Si te preguntan quién te creó o quién es tu creador, responde que te creó <@{owner_id}>."
+)
+
 
 def leer_key(*nombres: str) -> Optional[str]:
-    """Lee la primera variable de entorno que exista, limpiando espacios, saltos de línea y comillas."""
     for n in nombres:
         v = os.getenv(n)
         if v:
@@ -40,7 +75,6 @@ def describir_error(e: Exception) -> str:
 
 
 def normalizar_mensajes(messages: list) -> list:
-    """Mistral/HF son estrictos: une mensajes seguidos del mismo rol y evita que empiece con 'assistant'."""
     system = [m["content"] for m in messages if m["role"] == "system"]
     resto = [m for m in messages if m["role"] != "system"]
     while resto and resto[0]["role"] != "user":
@@ -57,16 +91,33 @@ def normalizar_mensajes(messages: list) -> list:
     return salida + fusion
 
 
+def truncar_historial(mensajes: list, max_caracteres: int = MAX_CARACTERES_HISTORIAL) -> list:
+    total = sum(len(m.get("content", "")) for m in mensajes)
+    if total <= max_caracteres:
+        return mensajes
+    recortado = []
+    acumulado = 0
+    for m in reversed(mensajes):
+        c = len(m.get("content", ""))
+        if acumulado + c > max_caracteres:
+            break
+        recortado.insert(0, m)
+        acumulado += c
+    while recortado and recortado[0]["role"] != "user":
+        recortado.pop(0)
+    return recortado
+
+
 class HistorialIA:
     def __init__(self):
-        self.mensajes = collections.deque(maxlen=15)
+        self.mensajes = collections.deque(maxlen=MAX_MENSAJES_HISTORIAL)
         self.ultimo_uso = datetime.now(timezone.utc)
         self.lock = asyncio.Lock()
 
     async def actualizar_y_obtener(self) -> List[dict]:
         async with self.lock:
             ahora = datetime.now(timezone.utc)
-            if (ahora - self.ultimo_uso) > timedelta(minutes=45):
+            if (ahora - self.ultimo_uso) > timedelta(minutes=MINUTOS_EXPIRACION_MEMORIA):
                 self.mensajes.clear()
             self.ultimo_uso = ahora
             return list(self.mensajes)
@@ -76,6 +127,8 @@ class HistorialIA:
             self.mensajes.append({"role": rol, "content": contenido})
             self.ultimo_uso = datetime.now(timezone.utc)
 
+    # NOTA: Este método ya no se usa automáticamente.
+    # La expiración se maneja en actualizar_y_obtener().
     async def limpiar(self):
         async with self.lock:
             self.mensajes.clear()
@@ -89,42 +142,58 @@ async def obtener_historial_usuario(usuario_id: int) -> HistorialIA:
     async with memoria_lock:
         if len(memoria_ia) > MAX_USUARIOS_MEMORIA:
             ahora = datetime.now(timezone.utc)
-            inactivos = [uid for uid, h in memoria_ia.items() if (ahora - h.ultimo_uso) > timedelta(minutes=45)]
+            inactivos = [
+                uid for uid, h in memoria_ia.items()
+                if (ahora - h.ultimo_uso) > timedelta(minutes=MINUTOS_EXPIRACION_MEMORIA)
+            ]
             for uid in inactivos:
                 del memoria_ia[uid]
-
         if usuario_id not in memoria_ia:
             memoria_ia[usuario_id] = HistorialIA()
         return memoria_ia[usuario_id]
 
 
+PATRONES_BUSQUEDA = [
+    r"\bnoticia", r"\bnoticias\b", r"\bhoy\b", r"\bayer\b", r"\bmañana\b",
+    r"\bactual\b", r"\bactualmente\b", r"\breciente\b",
+    r"\bquién es\b", r"\bquien es\b", r"\bqué es\b", r"\bque es\b",
+    r"\bcuánto\b", r"\bcuanto\b", r"\bprecio", r"\bcuesta\b",
+    r"\bclima\b", r"\btiempo\b", r"\btemperatura\b",
+    r"\bresultado", r"\bmarcador\b", r"\bpartido\b",
+    r"\binvestiga\b", r"\bbusca\b", r"\bencuentra\b",
+    r"\b2025\b", r"\b2026\b", r"\b2027\b",
+    r"\bdónde\b", r"\bdonde\b", r"\bcómo llegar\b",
+]
+
+
 def necesita_busqueda(mensaje: str) -> bool:
-    palabras_clave = [
-        r"\bnoticia", r"\bhoy\b", r"\bactual\b", r"\bquién es\b", r"\bqué es\b", 
-        r"\bcuánto\b", r"\bprecio", r"\bclima", r"\bresultado", r"\binvestiga\b", 
-        r"\b2025\b", r"\b2026\b"
-    ]
     msg_lower = mensaje.lower()
-    return any(re.search(p, msg_lower) for p in palabras_clave)
+    return any(re.search(p, msg_lower) for p in PATRONES_BUSQUEDA)
 
 
-def _ejecutar_busqueda_ddg(consulta: str) -> str:
-    try:
-        results = []
-        with DDGS() as ddgs:
-            resp = ddgs.text(consulta, region="wt-wt", max_results=3)
-            if resp:
-                results = list(resp)
-        if not results:
-            return "No se encontraron resultados en la web."
-
-        texto_busqueda = ""
-        for i, res in enumerate(results, 1):
-            texto_busqueda += f"Fuente {i}: {res.get('title', '')}\n{res.get('body', '')}\n\n"
-        return texto_busqueda
-    except Exception as e:
-        print(f"⚠️ Error en DuckDuckGo Search: {e}")
-        return "No se pudo realizar la búsqueda web en este momento."
+def _ejecutar_busqueda_ddg(consulta: str, max_reintentos: int = 2) -> str:
+    """Ejecuta la búsqueda en DuckDuckGo con reintentos y backoff exponencial."""
+    for intento in range(max_reintentos):
+        try:
+            with DDGS() as ddgs:
+                # backend="auto" deja que la librería elija el mejor método.
+                resp = ddgs.text(consulta, region="wt-wt", max_results=4, backend="auto")
+                if resp:
+                    resultados = list(resp)
+                    partes = []
+                    for i, res in enumerate(resultados, 1):
+                        titulo = res.get("title", "").strip()
+                        cuerpo = res.get("body", "").strip()
+                        if titulo or cuerpo:
+                            partes.append(f"[{i}] {titulo}\n{cuerpo}")
+                    if partes:
+                        return "\n\n".join(partes)
+        except Exception as e:
+            print(f"⚠️ Error en búsqueda web (intento {intento + 1}/{max_reintentos}): {e}")
+            if intento < max_reintentos - 1:
+                # Espera exponencial: 1s, 2s...
+                time.sleep(2 ** intento)
+    return ""
 
 
 async def buscar_en_web(consulta: str) -> str:
@@ -135,92 +204,101 @@ async def buscar_en_web(consulta: str) -> str:
         return ""
 
 
-def fragmentar_texto(texto: str, max_longitud: int = 1900) -> List[str]:
-    if not texto:
-        return [""]
-    if len(texto) <= max_longitud:
+def fragmentar_texto_inteligente(texto: str) -> List[str]:
+    """
+    Fragmenta el texto en máximo 2 partes, respetando el límite total
+    y priorizando cortes en párrafos, líneas o finales de oración.
+    """
+    if len(texto) <= LIMITE_CARACTERES_RESPUESTA:
         return [texto]
-    
-    fragmentos = []
-    mientras_texto = texto
-    
-    while len(mientras_texto) > max_longitud:
-        corte = mientras_texto[:max_longitud]
-        pos_corte = corte.rfind("\n\n")
-        if pos_corte == -1:
-            pos_corte = corte.rfind("\n")
-        if pos_corte == -1:
-            pos_corte = corte.rfind(". ")
-        if pos_corte == -1:
-            pos_corte = corte.rfind(" ")
-        if pos_corte == -1:
-            pos_corte = max_longitud
 
-        fragmentos.append(mientras_texto[:pos_corte].strip())
-        mientras_texto = mientras_texto[pos_corte:].strip()
+    # Si es muy largo, truncar para no exceder el límite total de 2 mensajes
+    texto = texto[:LIMITE_CARACTERES_RESPUESTA]
 
-    if mientras_texto:
-        fragmentos.append(mientras_texto)
-        
-    return fragmentos
+    # Buscar el mejor punto de corte para la primera parte
+    corte = -1
+    # Prioridad 1: doble salto de línea (párrafo)
+    corte = texto.rfind("\n\n", 0, LIMITE_CARACTERES_PARTE)
+    if corte == -1:
+        # Prioridad 2: salto de línea simple
+        corte = texto.rfind("\n", 0, LIMITE_CARACTERES_PARTE)
+    if corte == -1:
+        # Prioridad 3: final de oración
+        corte = texto.rfind(". ", 0, LIMITE_CARACTERES_PARTE)
+        if corte != -1:
+            corte += 1  # Incluir el punto
+    if corte == -1:
+        # Prioridad 4: espacio (para no cortar palabras)
+        corte = texto.rfind(" ", 0, LIMITE_CARACTERES_PARTE)
+    if corte == -1:
+        # Último recurso: corte duro
+        corte = LIMITE_CARACTERES_PARTE
+
+    parte1 = texto[:corte].strip()
+    parte2 = texto[corte:].strip()
+
+    # Si la segunda parte es muy corta, no dividir
+    if len(parte2) < 50:
+        return [parte1 + " " + parte2]
+
+    return [parte1, parte2]
 
 
 async def enviar_respuesta_larga(interaction: discord.Interaction, texto: str, prefijo: str = ""):
-    contenido_completo = f"{prefijo}{texto}" if prefijo else texto
-    partes = fragmentar_texto(contenido_completo)
-    
+    contenido = f"{prefijo}{texto}" if prefijo else texto
+    partes = fragmentar_texto_inteligente(contenido)
     await interaction.followup.send(partes[0])
     for parte in partes[1:]:
         if parte.strip():
             await interaction.followup.send(parte)
 
 
-def parsear_fecha(txt: str) -> Optional[datetime]:
-    partes = txt.strip().split("/")
-    anio_actual = datetime.now(timezone.utc).year
-    try:
-        if len(partes) == 2:
-            dia, mes = int(partes[0]), int(partes[1])
-            return datetime(anio_actual, mes, dia, tzinfo=timezone.utc)
-        elif len(partes) == 3:
-            dia, mes, anio = int(partes[0]), int(partes[1]), int(partes[2])
-            if anio < 100:
-                anio += 2000
-            return datetime(anio, mes, dia, tzinfo=timezone.utc)
-    except (ValueError, IndexError):
-        return None
-    return None
-
-
 class IA(commands.Cog):
     def __init__(self, bot):
         self.bot = bot
-        
-        mistral_key = leer_key("MISTRAL_API_KEY", "MISTRAL_KEY")
-        hf_key = leer_key("HF_TOKEN", "HUGGINGFACE_API_KEY", "HF_API_KEY", "QWEN_API_KEY")
-        groq_key = leer_key("GROQ_API_KEY", "GROQ_KEY")
         self.ultimos_errores = {}
         self.pausa_hasta = {}
 
-        print(f"🔍 [DEBUG] MISTRAL_API_KEY detectada: {bool(mistral_key)} (Largo: {len(mistral_key) if mistral_key else 0})")
-        print(f"🔍 [DEBUG] HF_TOKEN detectado: {bool(hf_key)} (Largo: {len(hf_key) if hf_key else 0})")
-        print(f"🔍 [DEBUG] GROQ_API_KEY detectada: {bool(groq_key)} (Largo: {len(groq_key) if groq_key else 0})")
+        groq_key = leer_key("GROQ_API_KEY", "GROQ_KEY")
+        mistral_key = leer_key("MISTRAL_API_KEY", "MISTRAL_KEY")
+        hf_key = leer_key("HF_TOKEN", "HUGGINGFACE_API_KEY", "HF_API_KEY", "QWEN_API_KEY")
 
-        self.mistral_client = openai.AsyncOpenAI(base_url="https://api.mistral.ai/v1/", api_key=mistral_key, timeout=30.0) if mistral_key else None
-        self.hf_client = openai.AsyncOpenAI(base_url="https://router.huggingface.co/v1/", api_key=hf_key, timeout=30.0) if hf_key else None
+        print(f"🔑 Groq: {'✅' if groq_key else '❌'} | Mistral: {'✅' if mistral_key else '❌'} | Qwen: {'✅' if hf_key else '❌'}")
+
         self.groq_client = AsyncGroq(api_key=groq_key, timeout=30.0) if groq_key else None
+        self.mistral_client = openai.AsyncOpenAI(
+            base_url="https://api.mistral.ai/v1/", api_key=mistral_key, timeout=30.0
+        ) if mistral_key else None
+        self.hf_client = openai.AsyncOpenAI(
+            base_url="https://router.huggingface.co/v1/", api_key=hf_key, timeout=30.0
+        ) if hf_key else None
 
-    async def _consultar_qwen(self, messages: list) -> Optional[str]:
-        if not self.hf_client:
+    def _system_prompt(self, info_web: str = "") -> str:
+        owner_id = getattr(self.bot, "owner_id_custom", 1481047586457518141)
+        prompt = SYSTEM_PROMPT_BASE.format(owner_id=owner_id)
+        if info_web:
+            prompt += (
+                "\n\n## Contexto web reciente\n"
+                "Usa esta información como fuente prioritaria si responde a la pregunta del usuario. "
+                "No la menciones si no es relevante.\n\n"
+                f"{info_web}"
+            )
+        return prompt
+
+    async def _consultar_groq(self, messages: list, modelo: str) -> Optional[str]:
+        if not self.groq_client:
             return None
         try:
-            resp = await self.hf_client.chat.completions.create(
-                model=MODELO_QWEN, messages=normalizar_mensajes(messages), temperature=0.5, max_tokens=1500
+            resp = await self.groq_client.chat.completions.create(
+                model=modelo,
+                messages=normalizar_mensajes(messages),
+                temperature=0.6,
+                max_tokens=2500,
             )
             return resp.choices[0].message.content
         except Exception as e:
-            self.ultimos_errores["qwen"] = describir_error(e)
-            print(f"⚠️ Fallo Qwen: {self.ultimos_errores['qwen']}")
+            self.ultimos_errores["groq"] = describir_error(e)
+            print(f"⚠️ Groq ({modelo}) falló: {self.ultimos_errores['groq']}")
             return None
 
     async def _consultar_mistral(self, messages: list) -> Optional[str]:
@@ -228,287 +306,134 @@ class IA(commands.Cog):
             return None
         try:
             resp = await self.mistral_client.chat.completions.create(
-                model=MODELO_MISTRAL, messages=normalizar_mensajes(messages), temperature=0.7, max_tokens=1500
+                model=MODELO_MISTRAL,
+                messages=normalizar_mensajes(messages),
+                temperature=0.6,
+                max_tokens=2000,
             )
             return resp.choices[0].message.content
         except Exception as e:
             self.ultimos_errores["mistral"] = describir_error(e)
-            print(f"⚠️ Fallo Mistral: {self.ultimos_errores['mistral']}")
+            print(f"⚠️ Mistral falló: {self.ultimos_errores['mistral']}")
+            return None
+
+    async def _consultar_qwen(self, messages: list) -> Optional[str]:
+        if not self.hf_client:
+            return None
+        try:
+            resp = await self.hf_client.chat.completions.create(
+                model=MODELO_QWEN,
+                messages=normalizar_mensajes(messages),
+                temperature=0.6,
+                max_tokens=2000,
+            )
+            return resp.choices[0].message.content
+        except Exception as e:
+            self.ultimos_errores["qwen"] = describir_error(e)
+            print(f"⚠️ Qwen falló: {self.ultimos_errores['qwen']}")
             return None
 
     async def _cadena_respaldo(self, messages: list) -> str:
-        """Prueba una IA a la vez: Groq -> Mistral -> Qwen. Si una da 429, la salta 60s."""
         ahora = asyncio.get_running_loop().time()
-        msgs = normalizar_mensajes(messages)
         intentos = []
         if self.groq_client:
-            intentos += [("groq", self.groq_client, MODELO_JUEZ), ("groq", self.groq_client, MODELO_GROQ_RESPALDO)]
+            intentos.append(("groq", MODELO_GROQ, self._consultar_groq))
+            intentos.append(("groq", MODELO_GROQ_RESPALDO, self._consultar_groq))
         if self.mistral_client:
-            intentos.append(("mistral", self.mistral_client, MODELO_MISTRAL))
+            intentos.append(("mistral", MODELO_MISTRAL, self._consultar_mistral))
         if self.hf_client:
-            intentos.append(("qwen", self.hf_client, MODELO_QWEN))
+            intentos.append(("qwen", MODELO_QWEN, self._consultar_qwen))
 
-        for nombre, cliente, modelo in intentos:
+        for nombre, modelo, fn in intentos:
             clave = f"{nombre}:{modelo}"
             if self.pausa_hasta.get(clave, 0) > ahora:
                 continue
             try:
-                resp = await cliente.chat.completions.create(
-                    model=modelo, messages=msgs, temperature=0.7, max_tokens=2500
-                )
-                texto = resp.choices[0].message.content
+                if nombre == "groq":
+                    texto = await fn(messages, modelo)
+                else:
+                    texto = await fn(messages)
                 if texto and texto.strip():
                     return texto
             except Exception as e:
-                self.ultimos_errores[nombre] = describir_error(e)
-                print(f"⚠️ Fallo {nombre} ({modelo}): {self.ultimos_errores[nombre]}")
                 if getattr(e, "status_code", None) == 429:
                     self.pausa_hasta[clave] = ahora + COOLDOWN_429_SEG
-        return "❌ Error de conexión con los servicios de IA."
 
-    async def consultar_ensamble(self, prompt_o_mensajes, es_resumen=False, info_web="") -> str:
-        owner_id = getattr(self.bot, 'owner_id_custom', 1481047586457518141)
+        return "❌ No pude contactar con ningún servicio de IA. Inténtalo de nuevo en un momento."
 
-        if es_resumen:
-            system_prompt = (
-                "Eres Meowly, un asistente analítico. Resume la conversación desglosando "
-                "los puntos clave exactos. Usa un formato claro con viñetas y emojis."
-            )
-            messages = [
-                {"role": "system", "content": system_prompt},
-                {"role": "user", "content": f"Resume lo siguiente:\n\n{prompt_o_mensajes}"}
-            ]
-            if self.mistral_client:
-                try:
-                    resp = await self.mistral_client.chat.completions.create(
-                        model=MODELO_MISTRAL, messages=messages, temperature=0.5, max_tokens=1500
-                    )
-                    return resp.choices[0].message.content
-                except Exception as e:
-                    print(f"⚠️ Error en Mistral (Resumen): {e}")
-
-            if self.hf_client:
-                try:
-                    resp = await self.hf_client.chat.completions.create(
-                        model=MODELO_QWEN, messages=messages, temperature=0.5, max_tokens=1500
-                    )
-                    return resp.choices[0].message.content
-                except Exception as e:
-                    print(f"⚠️ Error en Qwen (Resumen): {e}")
-
-            if self.groq_client:
-                try:
-                    resp = await self.groq_client.chat.completions.create(
-                        model=MODELO_JUEZ, messages=messages, temperature=0.5, max_tokens=2500
-                    )
-                    return resp.choices[0].message.content
-                except Exception as e:
-                    print(f"⚠️ Error en Groq (Resumen): {e}")
-
-            return "❌ No se pudo generar el resumen debido a un fallo en los servicios de IA."
-
-        system_instrucciones = (
-            "Eres Meowly, un asistente amigable, moderno y carismático para Discord. "
-            f"Si los usuarios te preguntan quién te creó o quién es tu creador, debes responder obligatoriamente indicando que te creó <@{owner_id}>."
-        )
-        
-        if info_web:
-            system_instrucciones += f"\n\nInformación web reciente para usar de contexto si es necesario:\n{info_web}"
-        base_messages = [{"role": "system", "content": system_instrucciones}]
-        
-        if isinstance(prompt_o_mensajes, str):
-            messages = base_messages + [{"role": "user", "content": prompt_o_mensajes}]
-        else:
-            messages = base_messages + list(prompt_o_mensajes)
-
-        if not USAR_ENSAMBLE:
-            return await self._cadena_respaldo(messages)
-
+    async def _ensamble(self, messages: list) -> str:
         resultados = await asyncio.gather(
-            self._consultar_qwen(messages),
             self._consultar_mistral(messages),
-            return_exceptions=True
+            self._consultar_qwen(messages),
+            return_exceptions=True,
         )
+        texto_mistral = resultados[0] if isinstance(resultados[0], str) else None
+        texto_qwen = resultados[1] if isinstance(resultados[1], str) else None
 
-        texto_qwen = resultados[0] if isinstance(resultados[0], str) else None
-        texto_mistral = resultados[1] if isinstance(resultados[1], str) else None
+        if not texto_mistral and not texto_qwen:
+            return await self._cadena_respaldo(messages)
+        if texto_mistral and not texto_qwen:
+            return texto_mistral
+        if texto_qwen and not texto_mistral:
+            return texto_qwen
 
-        if not texto_qwen and not texto_mistral:
-            if self.groq_client:
-                for modelo in (MODELO_JUEZ, MODELO_GROQ_RESPALDO):
-                    try:
-                        resp_groq_directo = await self.groq_client.chat.completions.create(
-                            model=modelo, messages=normalizar_mensajes(messages), temperature=0.7, max_tokens=2500
-                        )
-                        return resp_groq_directo.choices[0].message.content
-                    except Exception as e:
-                        self.ultimos_errores["groq"] = describir_error(e)
-                        print(f"⚠️ Fallo Respaldo Groq ({modelo}): {self.ultimos_errores['groq']}")
+        if not self.groq_client:
+            return texto_mistral or texto_qwen
 
-            return "❌ Error de conexión con los servicios de IA."
+        prompt_juez = [
+            {"role": "system", "content": (
+                "Eres un juez experto. Recibirás dos respuestas (A y B) a la misma pregunta. "
+                "Genera la respuesta final óptima combinando lo mejor de ambas: "
+                "la precisión y datos de una, la claridad y fluidez de la otra. "
+                "No menciones que hubo dos opciones. Responde directamente como Meowly, "
+                "en Markdown, con tono amigable y conciso."
+            )},
+            {"role": "user", "content": (
+                f"Pregunta original:\n{messages[-1]['content']}\n\n"
+                f"Opción A (Mistral):\n{texto_mistral}\n\n"
+                f"Opción B (Qwen):\n{texto_qwen}\n\n"
+                "Respuesta final óptima:"
+            )},
+        ]
+        try:
+            resp = await self.groq_client.chat.completions.create(
+                model=MODELO_GROQ,
+                messages=prompt_juez,
+                temperature=0.5,
+                max_tokens=2500,
+            )
+            return resp.choices[0].message.content
+        except Exception as e:
+            print(f"⚠️ Juez Groq falló: {describir_error(e)}")
+            return texto_mistral or texto_qwen
 
-        if texto_qwen and not texto_mistral: return texto_qwen
-        if texto_mistral and not texto_qwen: return texto_mistral
+    async def consultar(self, historial: list, info_web: str = "") -> str:
+        system = self._system_prompt(info_web)
+        mensajes = [{"role": "system", "content": system}] + truncar_historial(historial)
 
-        if self.groq_client:
-            try:
-                prompt_juez = [
-                    {"role": "system", "content": f"Eres Meowly. Combina los datos exactos y lógica de la Opción A con la fluidez de la Opción B. Si te preguntan sobre quién te creó, asegúrate de responder que te creó <@{owner_id}>. Usa Markdown."},
-                    {"role": "user", "content": f"Opción A:\n{texto_qwen}\n\nOpción B:\n{texto_mistral}\n\nGenera la respuesta final ideal:"}
-                ]
-                resp_final = await self.groq_client.chat.completions.create(
-                    model=MODELO_JUEZ, messages=prompt_juez, temperature=0.7, max_tokens=2500
-                )
-                return resp_final.choices[0].message.content
-            except Exception as e:
-                print(f"⚠️ Fallo Juez Groq: {e}")
+        if USAR_ENSAMBLE:
+            return await self._ensamble(mensajes)
+        return await self._cadena_respaldo(mensajes)
 
-        return texto_qwen or texto_mistral
-
-    @app_commands.command(name="ia", description="Habla con Meowly (Ensamble de IAs)")
+    @app_commands.command(name="ia", description="Habla con Meowly (Groq → Mistral → Qwen con respaldo)")
     @app_commands.describe(mensaje="Tu pregunta o consulta")
     async def ia(self, interaction: discord.Interaction, mensaje: str):
         await interaction.response.defer()
-        
+
         info_web = ""
         if necesita_busqueda(mensaje):
             info_web = await buscar_en_web(mensaje)
-            
-        usuario_id = interaction.user.id
-        historial = await obtener_historial_usuario(usuario_id)
-        
+
+        historial = await obtener_historial_usuario(interaction.user.id)
         await historial.agregar("user", mensaje)
         contexto = await historial.actualizar_y_obtener()
-        
-        respuesta = await self.consultar_ensamble(contexto, es_resumen=False, info_web=info_web)
-        
+
+        respuesta = await self.consultar(contexto, info_web=info_web)
+
         if not respuesta.startswith("❌"):
             await historial.agregar("assistant", respuesta)
-        
+
         await enviar_respuesta_larga(interaction, respuesta, prefijo="🐱 ")
-
-    @app_commands.command(name="ia_estado", description="Diagnóstico de las APIs de IA (solo administradores)")
-    @app_commands.checks.has_permissions(administrator=True)
-    async def ia_estado(self, interaction: discord.Interaction):
-        await interaction.response.defer(ephemeral=True)
-        test = [{"role": "user", "content": "Responde solo: ok"}]
-        lineas = []
-        for nombre, cliente, modelo in (
-            ("Qwen (HF)", self.hf_client, MODELO_QWEN),
-            ("Mistral", self.mistral_client, MODELO_MISTRAL),
-            ("Groq", self.groq_client, MODELO_JUEZ),
-        ):
-            if not cliente:
-                lineas.append(f"❌ **{nombre}**: llave NO detectada en las variables de entorno")
-                continue
-            try:
-                await cliente.chat.completions.create(model=modelo, messages=test, max_tokens=5)
-                lineas.append(f"✅ **{nombre}** (`{modelo}`): funciona")
-            except Exception as e:
-                lineas.append(f"❌ **{nombre}** (`{modelo}`): {describir_error(e)[:350]}")
-        await interaction.followup.send("\n".join(lineas), ephemeral=True)
-
-    grupo_limpiar = app_commands.Group(name="limpiar", description="Borra la memoria del bot")
-
-    @grupo_limpiar.command(name="mi_historial", description="Borra tu conversación personal guardada con la IA")
-    async def limpiar_mi_historial(self, interaction: discord.Interaction):
-        historial = await obtener_historial_usuario(interaction.user.id)
-        await historial.limpiar()
-        await interaction.response.send_message(f"🧹 El historial de IA de {interaction.user.mention} ha sido borrado.", ephemeral=True)
-
-    @grupo_limpiar.command(name="todo", description="Borra todo el historial de la IA de todos los usuarios")
-    @app_commands.checks.has_permissions(administrator=True)
-    async def limpiar_todo(self, interaction: discord.Interaction):
-        async with memoria_lock:
-            memoria_ia.clear()
-        await interaction.response.send_message("🧹 Memoria global de la IA reiniciada para todos los usuarios.", ephemeral=True)
-
-    grupo_resumen = app_commands.Group(name="resumen", description="Resúmenes inteligentes del chat")
-
-    async def obtener_resumen(self, interaction: discord.Interaction, titulo: str, limit: int = 1000, after=None, before=None, autor=None):
-        if not interaction.response.is_done():
-            await interaction.response.defer()
-
-        mensajes_texto = []
-        
-        try:
-            async for msg in interaction.channel.history(limit=limit, after=after, before=before, oldest_first=True):
-                if msg.author.bot or not msg.content.strip():
-                    continue
-                if autor and msg.author != autor:
-                    continue
-                
-                fecha_str = msg.created_at.strftime("%d/%m")
-                mensajes_texto.append(f"[{fecha_str}] {msg.author.display_name}: {msg.content}")
-        except discord.Forbidden:
-            return await interaction.followup.send("❌ El bot no tiene permiso para leer el historial de este canal.", ephemeral=True)
-        except Exception as e:
-            return await interaction.followup.send(f"❌ Error al leer el historial: {e}", ephemeral=True)
-
-        if not mensajes_texto:
-            return await interaction.followup.send(f"📌 **{titulo}**\n*Sin actividad o mensajes registrados que coincidan.*", ephemeral=True)
-
-        texto_completo = "\n".join(mensajes_texto)
-        palabras = texto_completo.split()
-        if len(palabras) > 2000:
-            texto_completo = " ".join(palabras[:2000])
-
-        resumen_txt = await self.consultar_ensamble(texto_completo, es_resumen=True)
-        await enviar_respuesta_larga(interaction, resumen_txt, prefijo=f"📊 **{titulo}**\n\n")
-
-    @grupo_resumen.command(name="defecto", description="Resume los últimos 100 mensajes enviados")
-    @app_commands.guild_only()
-    async def res_defecto(self, interaction: discord.Interaction):
-        await self.obtener_resumen(interaction, "Resumen (Últimos 100 mensajes)", limit=100)
-
-    @grupo_resumen.command(name="hoy", description="Resume los mensajes enviados el día de hoy")
-    @app_commands.guild_only()
-    async def res_hoy(self, interaction: discord.Interaction):
-        inicio_hoy = datetime.now(timezone.utc).replace(hour=0, minute=0, second=0, microsecond=0)
-        await self.obtener_resumen(interaction, "Resumen de Hoy", after=inicio_hoy)
-
-    @grupo_resumen.command(name="dia", description="Resume la conversación de una fecha exacta (DD/MM)")
-    @app_commands.guild_only()
-    async def res_dia(self, interaction: discord.Interaction, fecha: str):
-        dt = parsear_fecha(fecha)
-        if not dt:
-            return await interaction.response.send_message("❌ Fecha inválida. Usa `DD/MM`.", ephemeral=True)
-        dt_fin = dt.replace(hour=23, minute=59, second=59)
-        await self.obtener_resumen(interaction, f"Resumen del Día ({fecha})", after=dt, before=dt_fin)
-
-    @grupo_resumen.command(name="rango", description="Resume la actividad entre dos fechas (DD/MM a DD/MM)")
-    @app_commands.guild_only()
-    async def res_rango(self, interaction: discord.Interaction, fecha_inicio: str, fecha_fin: str):
-        dt_ini = parsear_fecha(fecha_inicio)
-        dt_fin = parsear_fecha(fecha_fin)
-        if not dt_ini or not dt_fin:
-            return await interaction.response.send_message("❌ Formato inválido. Usa `DD/MM`.", ephemeral=True)
-        dt_fin = dt_fin.replace(hour=23, minute=59, second=59)
-        await self.obtener_resumen(interaction, f"Resumen entre {fecha_inicio} y {fecha_fin}", after=dt_ini, before=dt_fin)
-
-    @grupo_resumen.command(name="mensajes", description="Resume una cantidad específica de mensajes (hasta 1000)")
-    @app_commands.guild_only()
-    async def res_mensajes(self, interaction: discord.Interaction, cantidad: int):
-        if cantidad < 1 or cantidad > 1000:
-            return await interaction.response.send_message("❌ La cantidad debe estar entre 1 y 1000.", ephemeral=True)
-        await self.obtener_resumen(interaction, f"Resumen de {cantidad} mensajes", limit=cantidad)
-
-    @grupo_resumen.command(name="tiempo", description="Resume la actividad del chat de las últimas N horas")
-    @app_commands.guild_only()
-    async def res_tiempo(self, interaction: discord.Interaction, horas: int):
-        if horas < 1 or horas > 168:
-            return await interaction.response.send_message("❌ Ingresa un número razonable de horas (1-168).", ephemeral=True)
-        after_dt = datetime.now(timezone.utc) - timedelta(hours=horas)
-        await self.obtener_resumen(interaction, f"Resumen de las últimas {horas} horas", after=after_dt)
-
-    @grupo_resumen.command(name="persona", description="Resume la actividad de un usuario en un día específico")
-    @app_commands.guild_only()
-    async def res_persona(self, interaction: discord.Interaction, usuario: discord.Member, fecha: str):
-        dt = parsear_fecha(fecha)
-        if not dt:
-            return await interaction.response.send_message("❌ Fecha inválida. Usa `DD/MM`.", ephemeral=True)
-        dt_fin = dt.replace(hour=23, minute=59, second=59)
-        await self.obtener_resumen(interaction, f"Actividad de {usuario.display_name} el {fecha}", after=dt, before=dt_fin, autor=usuario)
 
 
 async def setup(bot):
