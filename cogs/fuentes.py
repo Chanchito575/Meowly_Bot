@@ -522,7 +522,7 @@ class Fuentes(commands.Cog):
                 return None
             return openai.AsyncOpenAI(base_url=base_url, api_key=key, timeout=timeout, max_retries=1)
 
-        self.zai_client = crear("https://api.z.ai/api/coding/paas/v4", leer_key("ZAI_API_KEY", "ZHIPUAI_API_KEY"))
+        self.zai_client = crear("https://api.z.ai/api/paas/v4/", leer_key("ZAI_API_KEY", "ZHIPUAI_API_KEY"))
         self.groq_client = crear("https://api.groq.com/openai/v1", leer_key("GROQ_API_KEY", "GROQ_KEY"))
         self.hf_client = crear("https://router.huggingface.co/v1/", leer_key("HF_TOKEN", "HUGGINGFACE_API_KEY", "HF_API_KEY", "QWEN_API_KEY"))
 
