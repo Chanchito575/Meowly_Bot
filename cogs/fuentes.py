@@ -17,7 +17,7 @@ except ImportError:
 
 MODELO_ZAI = os.getenv("MODELO_ZAI", "glm-4-flash")
 MODELO_GROQ = os.getenv("MODELO_GROQ", "openai/gpt-oss-20b")
-MODELO_QWEN = os.getenv("MODELO_QWEN", "Qwen/Qwen2.5-7B-Instruct")
+MODELO_GROQ_RESPALDO = os.getenv("MODELO_GROQ_RESPALDO", "openai/gpt-oss-20b")
 
 MAX_FUENTES = 25
 CACHE_TTL = 30.0
@@ -114,15 +114,52 @@ def normalizar_nombre_fuente(nombre: str) -> str:
     return nombre.replace(" ", "-")
 
 
-class ModalNombre(discord.ui.Modal):
-    def __init__(self, cog, tipo: str, elemento, autor_id: int):
-        super().__init__(title=f"Guardar fuente desde {tipo}")
+class ModalNombreCrear(discord.ui.Modal):
+    def __init__(self, cog, tipo: str, mapeo: dict, autor_id: int):
+        super().__init__(title=f"Crear {tipo}")
         self.cog = cog
         self.tipo = tipo
+        self.mapeo = mapeo
+        self.autor_id = autor_id
+        self.nombre_input = discord.ui.TextInput(
+            label=f"Nombre del {tipo}",
+            placeholder="Ej: general",
+            min_length=1,
+            max_length=90,
+        )
+        self.add_item(self.nombre_input)
+
+    async def on_submit(self, interaction: discord.Interaction):
+        if interaction.user.id != self.autor_id:
+            return await interaction.response.send_message("❌ Este formulario no es tuyo.", ephemeral=True)
+        nombre = self.nombre_input.value.strip()
+        await interaction.response.defer(ephemeral=True)
+        try:
+            if self.tipo == "canal":
+                nombre_final = self.cog.construir_nombre_inteligente(nombre, None, self.mapeo, es_cat_o_voz=False)
+                ch = await interaction.guild.create_text_channel(name=nombre_final, reason=f"Fuente por {interaction.user}")
+                await interaction.followup.send(f"✅ Canal creado: {ch.mention}", ephemeral=True)
+            else:
+                nombre_final = self.cog.construir_nombre_inteligente(nombre, None, self.mapeo, es_cat_o_voz=True)
+                cat = await interaction.guild.create_category(name=nombre_final, reason=f"Fuente por {interaction.user}")
+                await interaction.followup.send(f"✅ Categoría creada: **{cat.name}**", ephemeral=True)
+        except discord.Forbidden:
+            await interaction.followup.send("❌ No tengo permisos para crear.", ephemeral=True)
+        except discord.HTTPException as e:
+            await interaction.followup.send(f"❌ Discord rechazó la creación: {str(getattr(e, 'text', e))[:150]}", ephemeral=True)
+        except Exception as e:
+            print(f"⚠️ Error creando: {type(e).__name__}: {e}")
+            await interaction.followup.send("❌ Error inesperado al crear.", ephemeral=True)
+
+
+class ModalEscanear(discord.ui.Modal):
+    def __init__(self, cog, elemento, autor_id: int):
+        super().__init__(title="Guardar fuente")
+        self.cog = cog
         self.elemento = elemento
         self.autor_id = autor_id
         self.nombre_input = discord.ui.TextInput(
-            label="Nombre de la fuente (local)",
+            label="Nombre local de la fuente",
             placeholder="Ej: mi-fuente",
             min_length=1,
             max_length=32,
@@ -155,38 +192,205 @@ class ModalNombre(discord.ui.Modal):
                     texto_global = f"🌐 Guardada en global como **{global_name}**."
 
             await interaction.followup.send(
-                f"🧠 Fuente **{nombre}** guardada desde {self.tipo} **{self.elemento.name}** ({len(mapeo)} chars).\n{texto_global}",
+                f"🧠 Fuente **{nombre}** guardada desde **{self.elemento.name}** ({len(mapeo)} chars).\n{texto_global}",
                 ephemeral=True,
             )
         except ErrorFuente as e:
             await interaction.followup.send(f"❌ {e}", ephemeral=True)
         except Exception as e:
-            print(f"⚠️ Error en ModalNombre: {type(e).__name__}: {e}")
+            print(f"⚠️ Error escaneando: {type(e).__name__}: {e}")
             traceback.print_exc()
             await interaction.followup.send("❌ Error al procesar la fuente.", ephemeral=True)
 
 
-class ModalProbar(discord.ui.Modal):
-    def __init__(self, cog, mapeo: dict, nombre: str, autor_id: int):
-        super().__init__(title=f"Probar: {nombre[:40]}")
+class VistaCrearFuente(discord.ui.View):
+    def __init__(self, cog, autor_id: int, tipo: str):
+        super().__init__(timeout=120)
         self.cog = cog
-        self.mapeo = mapeo
         self.autor_id = autor_id
-        self.texto_input = discord.ui.TextInput(
-            label="Texto de prueba",
-            placeholder="Ej: hola mundo",
-            min_length=1,
-            max_length=100,
-        )
-        self.add_item(self.texto_input)
+        self.tipo = tipo
 
-    async def on_submit(self, interaction: discord.Interaction):
+    async def interaction_check(self, interaction: discord.Interaction) -> bool:
         if interaction.user.id != self.autor_id:
-            return await interaction.response.send_message("❌ Este formulario no es tuyo.", ephemeral=True)
-        texto = self.texto_input.value.strip()
-        resultado = self.cog.construir_nombre_inteligente(texto, None, self.mapeo, es_cat_o_voz=True)
-        resultado = resultado.replace("`", "'")
-        await interaction.response.send_message(f"👁️ **Vista Previa:** `{resultado}`", ephemeral=True)
+            await interaction.response.send_message("❌ Este menú no es tuyo.", ephemeral=True)
+            return False
+        return True
+
+    @discord.ui.button(label="Global", style=discord.ButtonStyle.success, emoji="🌐")
+    async def btn_global(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await interaction.response.defer(ephemeral=True)
+        globales = await self.cog.cargar_globales()
+        if not globales:
+            return await interaction.followup.send("📂 No hay fuentes globales guardadas.", ephemeral=True)
+        opciones = [discord.SelectOption(label=n[:100], value=n[:100]) for n in list(globales.keys())[:25]]
+        select = discord.ui.Select(placeholder="🌐 Selecciona una fuente global", options=opciones)
+        view = discord.ui.View(timeout=120)
+
+        async def callback(inter: discord.Interaction):
+            nombre = inter.data["values"][0]
+            mapeo = globales.get(nombre)
+            if not mapeo:
+                return await inter.response.send_message("❌ Fuente no encontrada.", ephemeral=True)
+            modal = ModalNombreCrear(self.cog, self.tipo, mapeo, self.autor_id)
+            await inter.response.send_modal(modal)
+
+        select.callback = callback
+        view.add_item(select)
+        await interaction.followup.send(f"🌐 Elige la fuente global para el {self.tipo}:", view=view, ephemeral=True)
+
+    @discord.ui.button(label="Local", style=discord.ButtonStyle.primary, emoji="📁")
+    async def btn_local(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await interaction.response.defer(ephemeral=True)
+        locales = await self.cog.cargar_locales(interaction.guild_id)
+        if not locales:
+            return await interaction.followup.send("📂 No hay fuentes locales en este servidor. Escanea una primero.", ephemeral=True)
+        opciones = [discord.SelectOption(label=n[:100], value=n[:100]) for n in list(locales.keys())[:25]]
+        select = discord.ui.Select(placeholder="📁 Selecciona una fuente local", options=opciones)
+        view = discord.ui.View(timeout=120)
+
+        async def callback(inter: discord.Interaction):
+            nombre = inter.data["values"][0]
+            mapeo = locales.get(nombre)
+            if not mapeo:
+                return await inter.response.send_message("❌ Fuente no encontrada.", ephemeral=True)
+            modal = ModalNombreCrear(self.cog, self.tipo, mapeo, self.autor_id)
+            await inter.response.send_modal(modal)
+
+        select.callback = callback
+        view.add_item(select)
+        await interaction.followup.send(f"📁 Elige la fuente local para el {self.tipo}:", view=view, ephemeral=True)
+
+
+class VistaCrear(discord.ui.View):
+    def __init__(self, cog, autor_id: int):
+        super().__init__(timeout=120)
+        self.cog = cog
+        self.autor_id = autor_id
+
+    async def interaction_check(self, interaction: discord.Interaction) -> bool:
+        if interaction.user.id != self.autor_id:
+            await interaction.response.send_message("❌ Este menú no es tuyo.", ephemeral=True)
+            return False
+        return True
+
+    @discord.ui.button(label="Canal", style=discord.ButtonStyle.primary, emoji="📁")
+    async def btn_canal(self, interaction: discord.Interaction, button: discord.ui.Button):
+        view = VistaCrearFuente(self.cog, self.autor_id, "canal")
+        await interaction.response.edit_message(content="📁 ¿Qué tipo de fuente quieres para el canal?", view=view)
+
+    @discord.ui.button(label="Categoría", style=discord.ButtonStyle.primary, emoji="🗂️")
+    async def btn_categoria(self, interaction: discord.Interaction, button: discord.ui.Button):
+        view = VistaCrearFuente(self.cog, self.autor_id, "categoría")
+        await interaction.response.edit_message(content="🗂️ ¿Qué tipo de fuente quieres para la categoría?", view=view)
+
+
+class VistaGestionarFuente(discord.ui.View):
+    def __init__(self, cog, autor_id: int, tipo: str):
+        super().__init__(timeout=120)
+        self.cog = cog
+        self.autor_id = autor_id
+        self.tipo = tipo
+
+    async def interaction_check(self, interaction: discord.Interaction) -> bool:
+        if interaction.user.id != self.autor_id:
+            await interaction.response.send_message("❌ Este menú no es tuyo.", ephemeral=True)
+            return False
+        return True
+
+    @discord.ui.button(label="Global", style=discord.ButtonStyle.success, emoji="🌐")
+    async def btn_global(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await interaction.response.defer(ephemeral=True)
+        globales = await self.cog.cargar_globales()
+        if not globales:
+            return await interaction.followup.send("📂 No hay fuentes globales guardadas.", ephemeral=True)
+        opciones = [discord.SelectOption(label=n[:100], value=n[:100]) for n in list(globales.keys())[:25]]
+        select = discord.ui.Select(placeholder="🌐 Selecciona una fuente global", options=opciones)
+        view = discord.ui.View(timeout=120)
+
+        async def callback(inter: discord.Interaction):
+            nombre = inter.data["values"][0]
+            mapeo = globales.get(nombre)
+            if not mapeo:
+                return await inter.response.send_message("❌ Fuente no encontrada.", ephemeral=True)
+            await self.cog.mostrar_select_destino(inter, mapeo, self.tipo, self.autor_id)
+
+        select.callback = callback
+        view.add_item(select)
+        await interaction.followup.send(f"🌐 Elige la fuente global para el {self.tipo}:", view=view, ephemeral=True)
+
+    @discord.ui.button(label="Local", style=discord.ButtonStyle.primary, emoji="📁")
+    async def btn_local(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await interaction.response.defer(ephemeral=True)
+        locales = await self.cog.cargar_locales(interaction.guild_id)
+        if not locales:
+            return await interaction.followup.send("📂 No hay fuentes locales en este servidor.", ephemeral=True)
+        opciones = [discord.SelectOption(label=n[:100], value=n[:100]) for n in list(locales.keys())[:25]]
+        select = discord.ui.Select(placeholder="📁 Selecciona una fuente local", options=opciones)
+        view = discord.ui.View(timeout=120)
+
+        async def callback(inter: discord.Interaction):
+            nombre = inter.data["values"][0]
+            mapeo = locales.get(nombre)
+            if not mapeo:
+                return await inter.response.send_message("❌ Fuente no encontrada.", ephemeral=True)
+            await self.cog.mostrar_select_destino(inter, mapeo, self.tipo, self.autor_id)
+
+        select.callback = callback
+        view.add_item(select)
+        await interaction.followup.send(f"📁 Elige la fuente local para el {self.tipo}:", view=view, ephemeral=True)
+
+
+class VistaGestionar(discord.ui.View):
+    def __init__(self, cog, autor_id: int):
+        super().__init__(timeout=120)
+        self.cog = cog
+        self.autor_id = autor_id
+
+    async def interaction_check(self, interaction: discord.Interaction) -> bool:
+        if interaction.user.id != self.autor_id:
+            await interaction.response.send_message("❌ Este menú no es tuyo.", ephemeral=True)
+            return False
+        return True
+
+    @discord.ui.button(label="Canal", style=discord.ButtonStyle.primary, emoji="📁")
+    async def btn_canal(self, interaction: discord.Interaction, button: discord.ui.Button):
+        view = VistaGestionarFuente(self.cog, self.autor_id, "canal")
+        await interaction.response.edit_message(content="📁 ¿Qué tipo de fuente quieres aplicar al canal?", view=view)
+
+    @discord.ui.button(label="Categoría", style=discord.ButtonStyle.primary, emoji="🗂️")
+    async def btn_categoria(self, interaction: discord.Interaction, button: discord.ui.Button):
+        view = VistaGestionarFuente(self.cog, self.autor_id, "categoría")
+        await interaction.response.edit_message(content="🗂️ ¿Qué tipo de fuente quieres aplicar a la categoría?", view=view)
+
+
+class VistaEscanearSelect(discord.ui.View):
+    def __init__(self, cog, autor_id: int, tipo: str):
+        super().__init__(timeout=120)
+        self.cog = cog
+        self.autor_id = autor_id
+        self.tipo = tipo
+        tipos = [discord.ChannelType.text, discord.ChannelType.voice, discord.ChannelType.stage_voice, discord.ChannelType.forum]
+        if tipo == "categoría":
+            tipos = [discord.ChannelType.category]
+        select = discord.ui.ChannelSelect(
+            placeholder=f"Selecciona un {tipo}",
+            channel_types=tipos,
+        )
+        select.callback = self.on_select
+        self.add_item(select)
+
+    async def interaction_check(self, interaction: discord.Interaction) -> bool:
+        if interaction.user.id != self.autor_id:
+            await interaction.response.send_message("❌ Este menú no es tuyo.", ephemeral=True)
+            return False
+        return True
+
+    async def on_select(self, interaction: discord.Interaction):
+        ch = interaction.guild.get_channel(interaction.data["values"][0])
+        if ch is None:
+            return await interaction.response.send_message("❌ Elemento no encontrado.", ephemeral=True)
+        modal = ModalEscanear(self.cog, ch, self.autor_id)
+        await interaction.response.send_modal(modal)
 
 
 class VistaEscanear(discord.ui.View):
@@ -201,314 +405,15 @@ class VistaEscanear(discord.ui.View):
             return False
         return True
 
-    @discord.ui.button(label="Desde canal", style=discord.ButtonStyle.primary, emoji="📁")
+    @discord.ui.button(label="Canal", style=discord.ButtonStyle.primary, emoji="📁")
     async def btn_canal(self, interaction: discord.Interaction, button: discord.ui.Button):
-        select = discord.ui.ChannelSelect(
-            placeholder="Selecciona un canal de texto o voz",
-            channel_types=[discord.ChannelType.text, discord.ChannelType.voice, discord.ChannelType.stage_voice, discord.ChannelType.forum],
-        )
-        view = discord.ui.View(timeout=120)
+        view = VistaEscanearSelect(self.cog, self.autor_id, "canal")
+        await interaction.response.edit_message(content="📁 Selecciona el canal a escanear:", view=view)
 
-        async def callback(inter: discord.Interaction):
-            if inter.user.id != self.autor_id:
-                return await inter.response.send_message("❌ Este menú no es tuyo.", ephemeral=True)
-            ch = inter.guild.get_channel(select.values[0].id)
-            if ch is None:
-                return await inter.response.send_message("❌ Canal no encontrado.", ephemeral=True)
-            modal = ModalNombre(self.cog, "canal", ch, self.autor_id)
-            await inter.response.send_modal(modal)
-
-        select.callback = callback
-        view.add_item(select)
-        await interaction.response.send_message("📁 Selecciona el canal:", view=view, ephemeral=True)
-
-    @discord.ui.button(label="Desde categoría", style=discord.ButtonStyle.primary, emoji="🗂️")
+    @discord.ui.button(label="Categoría", style=discord.ButtonStyle.primary, emoji="🗂️")
     async def btn_categoria(self, interaction: discord.Interaction, button: discord.ui.Button):
-        select = discord.ui.ChannelSelect(
-            placeholder="Selecciona una categoría",
-            channel_types=[discord.ChannelType.category],
-        )
-        view = discord.ui.View(timeout=120)
-
-        async def callback(inter: discord.Interaction):
-            if inter.user.id != self.autor_id:
-                return await inter.response.send_message("❌ Este menú no es tuyo.", ephemeral=True)
-            cat = inter.guild.get_channel(select.values[0].id)
-            if cat is None:
-                return await inter.response.send_message("❌ Categoría no encontrada.", ephemeral=True)
-            modal = ModalNombre(self.cog, "categoría", cat, self.autor_id)
-            await inter.response.send_modal(modal)
-
-        select.callback = callback
-        view.add_item(select)
-        await interaction.response.send_message("🗂️ Selecciona la categoría:", view=view, ephemeral=True)
-
-
-class VistaAplicarGlobal(discord.ui.View):
-    def __init__(self, cog, autor_id: int, fuentes: dict):
-        super().__init__(timeout=120)
-        self.cog = cog
-        self.autor_id = autor_id
-        if not fuentes:
-            return
-        opciones = [discord.SelectOption(label=n[:100], value=n[:100]) for n in list(fuentes.keys())[:25]]
-        select = discord.ui.Select(placeholder="🌐 Selecciona una fuente global", options=opciones)
-        select.callback = self.on_select
-        self.fuentes = fuentes
-        self.add_item(select)
-
-    async def interaction_check(self, interaction: discord.Interaction) -> bool:
-        if interaction.user.id != self.autor_id:
-            await interaction.response.send_message("❌ Este menú no es tuyo.", ephemeral=True)
-            return False
-        return True
-
-    async def on_select(self, interaction: discord.Interaction):
-        nombre = interaction.data["values"][0]
-        mapeo = self.fuentes.get(nombre)
-        if not mapeo:
-            return await interaction.response.send_message("❌ Fuente no encontrada.", ephemeral=True)
-        select = discord.ui.ChannelSelect(
-            placeholder="Selecciona canal o categoría a rediseñar",
-            channel_types=[
-                discord.ChannelType.text, discord.ChannelType.voice,
-                discord.ChannelType.stage_voice, discord.ChannelType.forum,
-                discord.ChannelType.category,
-            ],
-        )
-        view = discord.ui.View(timeout=120)
-
-        async def callback(inter: discord.Interaction):
-            if inter.user.id != self.autor_id:
-                return await inter.response.send_message("❌ Este menú no es tuyo.", ephemeral=True)
-            target = inter.guild.get_channel(select.values[0].id)
-            if target is None:
-                return await inter.response.send_message("❌ Elemento no encontrado.", ephemeral=True)
-            await inter.response.defer(ephemeral=True)
-            nuevo_nombre = self.cog.construir_nombre_inteligente(
-                target.name, None, mapeo, es_cat_o_voz=self.cog.es_categoria_o_voz(target)
-            )
-            _, msg = await self.cog.editar_nombre(inter, target, nuevo_nombre)
-            await inter.followup.send(msg, ephemeral=True)
-
-        select.callback = callback
-        view.add_item(select)
-        await interaction.response.send_message(f"🎨 Aplicando **{nombre}**. Elige el destino:", view=view, ephemeral=True)
-
-
-class VistaAplicarLocal(discord.ui.View):
-    def __init__(self, cog, autor_id: int, fuentes: dict):
-        super().__init__(timeout=120)
-        self.cog = cog
-        self.autor_id = autor_id
-        if not fuentes:
-            return
-        opciones = [discord.SelectOption(label=n[:100], value=n[:100]) for n in list(fuentes.keys())[:25]]
-        select = discord.ui.Select(placeholder="📁 Selecciona una fuente local", options=opciones)
-        select.callback = self.on_select
-        self.fuentes = fuentes
-        self.add_item(select)
-
-    async def interaction_check(self, interaction: discord.Interaction) -> bool:
-        if interaction.user.id != self.autor_id:
-            await interaction.response.send_message("❌ Este menú no es tuyo.", ephemeral=True)
-            return False
-        return True
-
-    async def on_select(self, interaction: discord.Interaction):
-        nombre = interaction.data["values"][0]
-        mapeo = self.fuentes.get(nombre)
-        if not mapeo:
-            return await interaction.response.send_message("❌ Fuente no encontrada.", ephemeral=True)
-        select = discord.ui.ChannelSelect(
-            placeholder="Selecciona canal o categoría a rediseñar",
-            channel_types=[
-                discord.ChannelType.text, discord.ChannelType.voice,
-                discord.ChannelType.stage_voice, discord.ChannelType.forum,
-                discord.ChannelType.category,
-            ],
-        )
-        view = discord.ui.View(timeout=120)
-
-        async def callback(inter: discord.Interaction):
-            if inter.user.id != self.autor_id:
-                return await inter.response.send_message("❌ Este menú no es tuyo.", ephemeral=True)
-            target = inter.guild.get_channel(select.values[0].id)
-            if target is None:
-                return await inter.response.send_message("❌ Elemento no encontrado.", ephemeral=True)
-            await inter.response.defer(ephemeral=True)
-            nuevo_nombre = self.cog.construir_nombre_inteligente(
-                target.name, None, mapeo, es_cat_o_voz=self.cog.es_categoria_o_voz(target)
-            )
-            _, msg = await self.cog.editar_nombre(inter, target, nuevo_nombre)
-            await inter.followup.send(msg, ephemeral=True)
-
-        select.callback = callback
-        view.add_item(select)
-        await interaction.response.send_message(f"🎨 Aplicando **{nombre}**. Elige el destino:", view=view, ephemeral=True)
-
-
-class VistaAplicar(discord.ui.View):
-    def __init__(self, cog, autor_id: int, locales: dict, globales: dict):
-        super().__init__(timeout=120)
-        self.cog = cog
-        self.autor_id = autor_id
-        self.locales = locales
-        self.globales = globales
-
-    async def interaction_check(self, interaction: discord.Interaction) -> bool:
-        if interaction.user.id != self.autor_id:
-            await interaction.response.send_message("❌ Este menú no es tuyo.", ephemeral=True)
-            return False
-        return True
-
-    @discord.ui.button(label="Global", style=discord.ButtonStyle.success, emoji="🌐")
-    async def btn_global(self, interaction: discord.Interaction, button: discord.ui.Button):
-        if not self.globales:
-            return await interaction.response.send_message("📂 No hay fuentes globales guardadas.", ephemeral=True)
-        view = VistaAplicarGlobal(self.cog, self.autor_id, self.globales)
-        await interaction.response.send_message("🌐 Elige una fuente global:", view=view, ephemeral=True)
-
-    @discord.ui.button(label="Local", style=discord.ButtonStyle.primary, emoji="📁")
-    async def btn_local(self, interaction: discord.Interaction, button: discord.ui.Button):
-        if not self.locales:
-            return await interaction.response.send_message(
-                "📂 No hay fuentes locales en este servidor. Escanea una primero con 📥.", ephemeral=True
-            )
-        view = VistaAplicarLocal(self.cog, self.autor_id, self.locales)
-        await interaction.response.send_message("📁 Elige una fuente local:", view=view, ephemeral=True)
-
-
-class VistaEliminar(discord.ui.View):
-    def __init__(self, cog, autor_id: int, fuentes: dict):
-        super().__init__(timeout=120)
-        self.cog = cog
-        self.autor_id = autor_id
-        if not fuentes:
-            return
-        opciones = [discord.SelectOption(label=n[:100], value=n[:100]) for n in list(fuentes.keys())[:25]]
-        select = discord.ui.Select(placeholder="🗑️ Selecciona una fuente local para eliminar", options=opciones)
-        select.callback = self.on_select
-        self.fuentes = fuentes
-        self.add_item(select)
-
-    async def interaction_check(self, interaction: discord.Interaction) -> bool:
-        if interaction.user.id != self.autor_id:
-            await interaction.response.send_message("❌ Este menú no es tuyo.", ephemeral=True)
-            return False
-        return True
-
-    async def on_select(self, interaction: discord.Interaction):
-        nombre = interaction.data["values"][0]
-        await interaction.response.defer(ephemeral=True)
-        ok = await self.cog.eliminar_local(interaction.guild_id, nombre)
-        if ok:
-            await interaction.followup.send(f"🗑️ Fuente **{nombre}** eliminada del servidor.", ephemeral=True)
-        else:
-            await interaction.followup.send(f"❌ No se encontró **{nombre}**.", ephemeral=True)
-
-
-class VistaProbar(discord.ui.View):
-    def __init__(self, cog, autor_id: int, fuentes: dict):
-        super().__init__(timeout=120)
-        self.cog = cog
-        self.autor_id = autor_id
-        if not fuentes:
-            return
-        opciones = [discord.SelectOption(label=n[:100], value=n[:100]) for n in list(fuentes.keys())[:25]]
-        select = discord.ui.Select(placeholder="👁️ Selecciona una fuente para probar", options=opciones)
-        select.callback = self.on_select
-        self.fuentes = fuentes
-        self.add_item(select)
-
-    async def interaction_check(self, interaction: discord.Interaction) -> bool:
-        if interaction.user.id != self.autor_id:
-            await interaction.response.send_message("❌ Este menú no es tuyo.", ephemeral=True)
-            return False
-        return True
-
-    async def on_select(self, interaction: discord.Interaction):
-        nombre = interaction.data["values"][0]
-        mapeo = self.fuentes.get(nombre)
-        if not mapeo:
-            return await interaction.response.send_message("❌ Fuente no encontrada.", ephemeral=True)
-        modal = ModalProbar(self.cog, mapeo, nombre, self.autor_id)
-        await interaction.response.send_modal(modal)
-
-
-class VistaPanelFuente(discord.ui.View):
-    def __init__(self, cog, autor_id: int):
-        super().__init__(timeout=300)
-        self.cog = cog
-        self.autor_id = autor_id
-
-    async def interaction_check(self, interaction: discord.Interaction) -> bool:
-        if interaction.user.id != self.autor_id:
-            await interaction.response.send_message("❌ Este panel no es tuyo.", ephemeral=True)
-            return False
-        return True
-
-    @discord.ui.button(label="Escanear", style=discord.ButtonStyle.primary, emoji="📥", row=0)
-    async def btn_escanear(self, interaction: discord.Interaction, button: discord.ui.Button):
-        view = VistaEscanear(self.cog, self.autor_id)
-        await interaction.response.send_message("📥 ¿Desde dónde quieres escanear?", view=view, ephemeral=True)
-
-    @discord.ui.button(label="Aplicar", style=discord.ButtonStyle.success, emoji="🎨", row=0)
-    async def btn_aplicar(self, interaction: discord.Interaction, button: discord.ui.Button):
-        await interaction.response.defer(ephemeral=True)
-        locales = await self.cog.cargar_locales(interaction.guild_id)
-        globales = await self.cog.cargar_globales()
-        if not locales and not globales:
-            return await interaction.followup.send("📂 No hay fuentes guardadas. Escanea una primero.", ephemeral=True)
-        view = VistaAplicar(self.cog, self.autor_id, locales, globales)
-        await interaction.followup.send("🎨 ¿Qué tipo de fuente quieres aplicar?", view=view, ephemeral=True)
-
-    @discord.ui.button(label="Listar", style=discord.ButtonStyle.secondary, emoji="📋", row=0)
-    async def btn_listar(self, interaction: discord.Interaction, button: discord.ui.Button):
-        await interaction.response.defer(ephemeral=True)
-        locales = await self.cog.cargar_locales(interaction.guild_id)
-        globales = await self.cog.cargar_globales()
-        if not locales and not globales:
-            return await interaction.followup.send("📂 No hay fuentes guardadas.", ephemeral=True)
-        embed = discord.Embed(title="🎨 Tipografías Registradas", color=discord.Color.blue())
-        if locales:
-            lineas = []
-            for n, m in list(locales.items())[:15]:
-                ejemplo = self.cog.construir_nombre_inteligente("canal-pruebas", None, m, False)
-                lineas.append(f"📁 **{n}** → `{ejemplo}` ({len(m)} chars)")
-            embed.add_field(name="Locales del servidor", value="\n".join(lineas)[:1024], inline=False)
-        if globales:
-            lineas = []
-            for n, m in list(globales.items())[:15]:
-                ejemplo = self.cog.construir_nombre_inteligente("canal-pruebas", None, m, False)
-                lineas.append(f"🌐 **{n}** → `{ejemplo}` ({len(m)} chars)")
-            embed.add_field(name="Globales", value="\n".join(lineas)[:1024], inline=False)
-        await interaction.followup.send(embed=embed, ephemeral=True)
-
-    @discord.ui.button(label="Probar", style=discord.ButtonStyle.secondary, emoji="👁️", row=1)
-    async def btn_probar(self, interaction: discord.Interaction, button: discord.ui.Button):
-        await interaction.response.defer(ephemeral=True)
-        locales = await self.cog.cargar_locales(interaction.guild_id)
-        globales = await self.cog.cargar_globales()
-        todas = {**globales, **locales}
-        if not todas:
-            return await interaction.followup.send("📂 No hay fuentes guardadas.", ephemeral=True)
-        view = VistaProbar(self.cog, self.autor_id, todas)
-        await interaction.followup.send("👁️ Elige una fuente para probar:", view=view, ephemeral=True)
-
-    @discord.ui.button(label="Eliminar", style=discord.ButtonStyle.danger, emoji="🗑️", row=1)
-    async def btn_eliminar(self, interaction: discord.Interaction, button: discord.ui.Button):
-        await interaction.response.defer(ephemeral=True)
-        locales = await self.cog.cargar_locales(interaction.guild_id)
-        if not locales:
-            return await interaction.followup.send(
-                "📂 No hay fuentes locales para eliminar. Las globales solo se borran desde Firestore.", ephemeral=True
-            )
-        view = VistaEliminar(self.cog, self.autor_id, locales)
-        await interaction.followup.send(
-            "🗑️ Elige una fuente local para eliminar (las globales no se pueden eliminar desde aquí):",
-            view=view, ephemeral=True,
-        )
+        view = VistaEscanearSelect(self.cog, self.autor_id, "categoría")
+        await interaction.response.edit_message(content="🗂️ Selecciona la categoría a escanear:", view=view)
 
 
 class Fuentes(commands.Cog):
@@ -524,10 +429,9 @@ class Fuentes(commands.Cog):
 
         self.zai_client = crear("https://api.z.ai/api/paas/v4/", leer_key("ZAI_API_KEY", "ZHIPUAI_API_KEY"))
         self.groq_client = crear("https://api.groq.com/openai/v1", leer_key("GROQ_API_KEY", "GROQ_KEY"))
-        self.hf_client = crear("https://router.huggingface.co/v1/", leer_key("HF_TOKEN", "HUGGINGFACE_API_KEY", "HF_API_KEY", "QWEN_API_KEY"))
 
     async def cog_unload(self):
-        for cliente in (self.zai_client, self.groq_client, self.hf_client):
+        for cliente in (self.zai_client, self.groq_client):
             if cliente:
                 try:
                     await cliente.close()
@@ -616,28 +520,6 @@ class Fuentes(commands.Cog):
         finally:
             self._cache_global = (0.0, {})
 
-    async def eliminar_local(self, guild_id: int, nombre: str) -> bool:
-        if not self.bot.db or not guild_id or firestore is None:
-            return False
-
-        def _delete():
-            ref = self.bot.db.collection("servidores").document(str(guild_id))
-            doc = ref.get()
-            if doc.exists:
-                data = doc.to_dict() or {}
-                if nombre in data.get("fuentes", {}):
-                    ref.set({"fuentes": {nombre: firestore.DELETE_FIELD}}, merge=True)
-                    return True
-            return False
-
-        try:
-            return await asyncio.to_thread(_delete)
-        except Exception as e:
-            print(f"⚠️ Error eliminando local: {type(e).__name__}: {e}")
-            return False
-        finally:
-            self._cache_local.pop(guild_id, None)
-
     def desestilizar_texto(self, texto: str) -> str:
         resultado = []
         for char in texto:
@@ -710,6 +592,33 @@ class Fuentes(commands.Cog):
                 return False, "❌ Nombre inválido."
             return False, "❌ Error de Discord."
 
+    async def mostrar_select_destino(self, interaction: discord.Interaction, mapeo: dict, tipo: str, autor_id: int):
+        tipos = [discord.ChannelType.text, discord.ChannelType.voice, discord.ChannelType.stage_voice, discord.ChannelType.forum]
+        if tipo == "categoría":
+            tipos = [discord.ChannelType.category]
+        select = discord.ui.ChannelSelect(
+            placeholder=f"Selecciona el {tipo} a rediseñar",
+            channel_types=tipos,
+        )
+        view = discord.ui.View(timeout=120)
+
+        async def callback(inter: discord.Interaction):
+            if inter.user.id != autor_id:
+                return await inter.response.send_message("❌ Este menú no es tuyo.", ephemeral=True)
+            target = inter.guild.get_channel(inter.data["values"][0])
+            if target is None:
+                return await inter.response.send_message("❌ Elemento no encontrado.", ephemeral=True)
+            await inter.response.defer(ephemeral=True)
+            nuevo_nombre = self.construir_nombre_inteligente(
+                target.name, None, mapeo, es_cat_o_voz=self.es_categoria_o_voz(target)
+            )
+            _, msg = await self.editar_nombre(inter, target, nuevo_nombre)
+            await inter.followup.send(msg, ephemeral=True)
+
+        select.callback = callback
+        view.add_item(select)
+        await interaction.followup.send(f"🎨 Elige el {tipo} a rediseñar:", view=view, ephemeral=True)
+
     def _limpiar_json(self, texto: str) -> dict:
         try:
             t = (texto or "").strip()
@@ -751,8 +660,8 @@ class Fuentes(commands.Cog):
             print(f"⚠️ Zai falló: {describir_error(e)}")
         return {}
 
-    async def _mapear_con_qwen(self, ejemplo: str) -> dict:
-        if not self.hf_client:
+    async def _mapear_con_groq(self, ejemplo: str) -> dict:
+        if not self.groq_client:
             return {}
         prompt = (
             f"Analiza la fuente en: '{ejemplo}'. Genera un JSON mapeando todo el abecedario "
@@ -761,15 +670,15 @@ class Fuentes(commands.Cog):
             'Ejemplo: {"a": "𝗮", "A": "𝗔"}'
         )
         try:
-            resp = await self.hf_client.chat.completions.create(
-                model=MODELO_QWEN, messages=[{"role": "user", "content": prompt}], temperature=0.1, max_tokens=3000
+            resp = await self.groq_client.chat.completions.create(
+                model=MODELO_GROQ_RESPALDO, messages=[{"role": "user", "content": prompt}], temperature=0.1, max_tokens=3000
             )
             mapeo = self._validar_mapeo(self._limpiar_json(resp.choices[0].message.content))
             if mapeo:
-                print(f"🧠 Qwen generó un mapeo de {len(mapeo)} caracteres.")
+                print(f"🧠 Groq generó un mapeo de {len(mapeo)} caracteres.")
                 return mapeo
         except Exception as e:
-            print(f"⚠️ Qwen falló: {describir_error(e)}")
+            print(f"⚠️ Groq falló como mapeador: {describir_error(e)}")
         return {}
 
     async def _comparar_con_groq(self, mapeo_nuevo: dict, globales: dict):
@@ -793,7 +702,7 @@ class Fuentes(commands.Cog):
                 if nombre.lower() in texto.lower():
                     return nombre
         except Exception as e:
-            print(f"⚠️ Groq falló: {describir_error(e)}")
+            print(f"⚠️ Groq falló comparando: {describir_error(e)}")
         return None
 
     async def extraer_mapeo(self, ejemplo: str, guild_id: int):
@@ -827,34 +736,57 @@ class Fuentes(commands.Cog):
                 return mapeo_zai, nombre_global, True
             return mapeo_zai, None, False
 
-        mapeo_qwen = await self._mapear_con_qwen(ejemplo)
-        if mapeo_qwen:
-            return mapeo_qwen, None, False
+        mapeo_groq = await self._mapear_con_groq(ejemplo)
+        if mapeo_groq:
+            nombre_global = await self._comparar_con_groq(mapeo_groq, await self.cargar_globales())
+            if nombre_global:
+                return mapeo_groq, nombre_global, True
+            return mapeo_groq, None, False
 
         if mapeo_detectado:
             return mapeo_detectado, None, False
         raise ErrorFuente("No se pudo detectar ni extrapolar la tipografía.")
 
-    @app_commands.command(name="fuente", description="Panel de gestión de tipografías para canales y categorías")
+    @app_commands.command(name="crear", description="Crea un canal o categoría con una fuente aplicada")
     @app_commands.guild_only()
     @app_commands.checks.has_permissions(manage_channels=True)
-    async def fuente_cmd(self, interaction: discord.Interaction):
+    async def crear_cmd(self, interaction: discord.Interaction):
         if not self.bot.db:
             return await interaction.response.send_message("❌ Firebase no disponible.", ephemeral=True)
-
         embed = discord.Embed(
-            title="🎨 Panel de Tipografías — Meowly",
-            description=(
-                "**📥 Escanear**: detecta la tipografía de un canal/categoría y la guarda (local + global).\n"
-                "**🎨 Aplicar**: aplica una fuente global o local a un canal/categoría existente.\n"
-                "**📋 Listar**: muestra las fuentes locales y globales.\n"
-                "**👁️ Probar**: vista previa de un texto con una fuente.\n"
-                "**🗑️ Eliminar**: borra una fuente local (las globales solo desde Firestore)."
-            ),
+            title="🆕 Crear con fuente",
+            description="Elige si quieres crear un **canal** o una **categoría**.",
+            color=discord.Color.green(),
+        )
+        view = VistaCrear(self, interaction.user.id)
+        await interaction.response.send_message(embed=embed, view=view, ephemeral=True)
+
+    @app_commands.command(name="gestionar", description="Aplica una fuente a un canal o categoría existente")
+    @app_commands.guild_only()
+    @app_commands.checks.has_permissions(manage_channels=True)
+    async def gestionar_cmd(self, interaction: discord.Interaction):
+        if not self.bot.db:
+            return await interaction.response.send_message("❌ Firebase no disponible.", ephemeral=True)
+        embed = discord.Embed(
+            title="🎨 Gestionar fuente",
+            description="Elige si quieres rediseñar un **canal** o una **categoría**.",
             color=discord.Color.blurple(),
         )
-        embed.set_footer(text="Solo quien ejecutó el comando puede usar este panel.")
-        view = VistaPanelFuente(self, interaction.user.id)
+        view = VistaGestionar(self, interaction.user.id)
+        await interaction.response.send_message(embed=embed, view=view, ephemeral=True)
+
+    @app_commands.command(name="escanear", description="Escanea la tipografía de un canal o categoría y la guarda")
+    @app_commands.guild_only()
+    @app_commands.checks.has_permissions(manage_channels=True)
+    async def escanear_cmd(self, interaction: discord.Interaction):
+        if not self.bot.db:
+            return await interaction.response.send_message("❌ Firebase no disponible.", ephemeral=True)
+        embed = discord.Embed(
+            title="📥 Escanear fuente",
+            description="Elige si quieres escanear un **canal** o una **categoría**.",
+            color=discord.Color.orange(),
+        )
+        view = VistaEscanear(self, interaction.user.id)
         await interaction.response.send_message(embed=embed, view=view, ephemeral=True)
 
 
