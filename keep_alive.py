@@ -20,21 +20,24 @@ HTML_TEMPLATE = """<!DOCTYPE html>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <meta name="theme-color" content="#08070b">
-    <meta name="description" content="Meowly: bot de Discord con IA (Groq, Mistral y Qwen), búsqueda web, resúmenes de chat, tipografías para canales y gestión del servidor.">
-    <meta property="og:title" content="Meowly Bot">
-    <meta property="og:description" content="IA, resúmenes de chat, búsqueda web, tipografías y gestión de canales para tu servidor de Discord.">
+    <meta name="description" content="Meowly: bot de Discord con IA multi-proveedor (Groq, Mistral, Qwen y Zai), búsqueda web en tiempo real y paneles para crear, aplicar y escanear tipografías en canales y categorías.">
+    <meta property="og:title" content="Meowly Bot · Asistente con IA para Discord">
+    <meta property="og:description" content="IA con respaldo automático entre 4 proveedores, búsqueda web y paneles interactivos de tipografías para tu servidor.">
+    <meta property="og:type" content="website">
     <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'%3E%3Ctext y='.9em' font-size='90'%3E%F0%9F%90%B1%3C/text%3E%3C/svg%3E">
-    <title>Meowly Bot · Asistente con IA para Discord</title>
+    <title>Meowly Bot · IA y tipografías para Discord</title>
     <style>
         :root {
             --bg: #08070b;
             --texto: #f4f4f5;
             --suave: #a1a1aa;
+            --tenue: #71717a;
             --borde: rgba(255, 255, 255, 0.09);
             --cristal: rgba(20, 18, 30, 0.62);
             --morado: #a855f7;
             --indigo: #6366f1;
             --rosa: #ec4899;
+            --verde: #22c55e;
         }
         * { margin: 0; padding: 0; box-sizing: border-box; }
         html { scroll-behavior: smooth; }
@@ -56,7 +59,7 @@ HTML_TEMPLATE = """<!DOCTYPE html>
         .orb-3 { width: 260px; height: 260px; background: var(--rosa); top: 45%; right: 18%; opacity: .22; animation-delay: -2s; }
         @keyframes flotar { from { transform: translate(0, 0) scale(1); } to { transform: translate(30px, 40px) scale(1.12); } }
 
-        .contenedor { position: relative; z-index: 1; max-width: 860px; margin: 0 auto; }
+        .contenedor { position: relative; z-index: 1; max-width: 880px; margin: 0 auto; }
 
         .cristal {
             background: var(--cristal);
@@ -68,7 +71,7 @@ HTML_TEMPLATE = """<!DOCTYPE html>
         }
 
         /* Encabezado */
-        .hero { text-align: center; padding: 48px 28px 40px; }
+        .hero { text-align: center; padding: 48px 28px 44px; }
         .logo {
             width: 96px; height: 96px; margin: 0 auto 20px; border-radius: 50%;
             display: flex; align-items: center; justify-content: center; font-size: 52px;
@@ -86,10 +89,10 @@ HTML_TEMPLATE = """<!DOCTYPE html>
             background: rgba(34, 197, 94, .12); border: 1px solid rgba(34, 197, 94, .32);
             color: #4ade80; padding: 6px 16px; border-radius: 30px; font-size: .82rem; font-weight: 600;
         }
-        .punto { width: 8px; height: 8px; border-radius: 50%; background: #22c55e; box-shadow: 0 0 10px #22c55e;
+        .punto { width: 8px; height: 8px; border-radius: 50%; background: var(--verde); box-shadow: 0 0 10px var(--verde);
                  animation: pulso 2s infinite; }
         @keyframes pulso { 0%, 100% { opacity: 1; transform: scale(1); } 50% { opacity: .5; transform: scale(1.25); } }
-        .lema { color: var(--suave); font-size: 1.05rem; line-height: 1.65; max-width: 560px; margin: 0 auto 30px; }
+        .lema { color: var(--suave); font-size: 1.05rem; line-height: 1.65; max-width: 620px; margin: 0 auto 30px; }
 
         .boton {
             display: inline-flex; align-items: center; justify-content: center; gap: 10px;
@@ -99,12 +102,31 @@ HTML_TEMPLATE = """<!DOCTYPE html>
         }
         .boton:hover, .boton:focus-visible { transform: translateY(-3px); box-shadow: 0 14px 36px rgba(168, 85, 247, .6); outline: none; }
         .boton:active { transform: translateY(-1px); }
-        .nota { margin-top: 14px; font-size: .8rem; color: #71717a; }
+        .nota { margin-top: 14px; font-size: .8rem; color: var(--tenue); }
 
         /* Secciones */
         section { margin-top: 22px; padding: 30px 28px; }
         h2 { font-size: 1.15rem; font-weight: 700; margin-bottom: 18px; display: flex; align-items: center; gap: 10px; }
         h2 small { font-weight: 500; color: var(--suave); font-size: .82rem; }
+
+        /* Stack de IA */
+        .stack {
+            display: grid; grid-template-columns: repeat(auto-fit, minmax(160px, 1fr)); gap: 10px;
+            margin-top: 4px;
+        }
+        .proveedor {
+            display: flex; align-items: center; gap: 10px; padding: 12px 14px;
+            background: rgba(255, 255, 255, .035); border: 1px solid rgba(255, 255, 255, .07);
+            border-radius: 12px; transition: border-color .25s ease;
+        }
+        .proveedor:hover { border-color: rgba(168, 85, 247, .45); }
+        .proveedor .punto-ia { width: 8px; height: 8px; border-radius: 50%; flex-shrink: 0; }
+        .proveedor .nombre { font-size: .9rem; font-weight: 650; }
+        .proveedor .rol { font-size: .74rem; color: var(--tenue); margin-top: 1px; }
+        .p-1 { background: #f97316; box-shadow: 0 0 8px rgba(249,115,22,.6); }
+        .p-2 { background: #eab308; box-shadow: 0 0 8px rgba(234,179,8,.6); }
+        .p-3 { background: #3b82f6; box-shadow: 0 0 8px rgba(59,130,246,.6); }
+        .p-4 { background: #22c55e; box-shadow: 0 0 8px rgba(34,197,94,.6); }
 
         .rejilla { display: grid; grid-template-columns: repeat(auto-fit, minmax(240px, 1fr)); gap: 14px; }
         .tarjeta {
@@ -140,7 +162,7 @@ HTML_TEMPLATE = """<!DOCTYPE html>
 
         @media (max-width: 520px) {
             body { padding: 28px 14px 30px; }
-            .hero { padding: 36px 18px 32px; }
+            .hero { padding: 36px 18px 34px; }
             section { padding: 24px 18px; }
             .boton { width: 100%; }
         }
@@ -161,12 +183,46 @@ HTML_TEMPLATE = """<!DOCTYPE html>
             <h1>Meowly Bot</h1>
             <div class="estado"><span class="punto"></span> Servidor activo</div>
             <p class="lema">
-                Un asistente para Discord que conversa con IA, resume tus chats, busca en la web
-                y te ayuda a ordenar y decorar tu servidor.
+                Un asistente para Discord con IA de respaldo automático entre 4 proveedores,
+                búsqueda web en tiempo real y paneles interactivos para decorar tu servidor.
             </p>
             <a class="boton" href="__ENLACE__" target="_blank" rel="noopener noreferrer">✨ Añadir Meowly a tu servidor</a>
             <p class="nota">Se te pedirá elegir el servidor y confirmar los permisos en Discord.</p>
         </header>
+
+        <section class="cristal" aria-labelledby="t-ia">
+            <h2 id="t-ia">🧠 Stack de IA <small>respaldo automático en cadena</small></h2>
+            <div class="stack">
+                <div class="proveedor">
+                    <span class="punto-ia p-1"></span>
+                    <div>
+                        <div class="nombre">Groq</div>
+                        <div class="rol">Principal · rápido</div>
+                    </div>
+                </div>
+                <div class="proveedor">
+                    <span class="punto-ia p-2"></span>
+                    <div>
+                        <div class="nombre">Mistral</div>
+                        <div class="rol">Respaldo 1</div>
+                    </div>
+                </div>
+                <div class="proveedor">
+                    <span class="punto-ia p-3"></span>
+                    <div>
+                        <div class="nombre">Qwen</div>
+                        <div class="rol">Respaldo 2</div>
+                    </div>
+                </div>
+                <div class="proveedor">
+                    <span class="punto-ia p-4"></span>
+                    <div>
+                        <div class="nombre">Zai · GLM</div>
+                        <div class="rol">Tipografías</div>
+                    </div>
+                </div>
+            </div>
+        </section>
 
         <section class="cristal" aria-labelledby="t-funciones">
             <h2 id="t-funciones">⚡ ¿Qué puede hacer?</h2>
@@ -174,44 +230,43 @@ HTML_TEMPLATE = """<!DOCTYPE html>
                 <article class="tarjeta">
                     <span class="icono">🧠</span>
                     <h3>IA con respaldo automático</h3>
-                    <p>Usa Groq, Mistral y Qwen: si una falla, prueba la siguiente. Recuerda tu conversación.</p>
+                    <p>Si un proveedor falla, prueba el siguiente sin que lo notes. Recuerda tu conversación 40 minutos.</p>
                 </article>
                 <article class="tarjeta">
                     <span class="icono">🌐</span>
                     <h3>Búsqueda en la web</h3>
-                    <p>Consulta DuckDuckGo cuando preguntas por noticias, precios, clima o algo de actualidad.</p>
-                </article>
-                <article class="tarjeta">
-                    <span class="icono">📊</span>
-                    <h3>Resúmenes de chat</h3>
-                    <p>Resume los últimos mensajes, el día de hoy, una fecha, un rango de horas o a una persona.</p>
+                    <p>Consulta DuckDuckGo automáticamente cuando preguntas por noticias, precios, clima o actualidad.</p>
                 </article>
                 <article class="tarjeta">
                     <span class="icono">🎨</span>
                     <h3>Tipografías para canales</h3>
-                    <p>Detecta y guarda fuentes especiales (𝗠𝗲𝗼𝘄𝗹𝘆, ᴍᴇᴏᴡʟʏ…) y las aplica a los nombres de tus canales.</p>
+                    <p>Escanear, guardar y aplicar fuentes especiales (𝗠𝗲𝗼𝘄𝗹𝘆, ᴍᴇᴏᴡʟʏ…) con paneles interactivos.</p>
+                </article>
+                <article class="tarjeta">
+                    <span class="icono">🗂️</span>
+                    <h3>Crear canales y categorías</h3>
+                    <p>Crea un canal o categoría nueva ya con la tipografía elegida aplicada desde el primer segundo.</p>
+                </article>
+                <article class="tarjeta">
+                    <span class="icono">🌍</span>
+                    <h3>Fuentes globales y locales</h3>
+                    <p>Comparte tipografías entre todos los servidores (globales) o guárdalas solo para el tuyo (locales).</p>
                 </article>
                 <article class="tarjeta">
                     <span class="icono">🛠️</span>
-                    <h3>Gestión de canales</h3>
-                    <p>Crea, renombra y elimina canales y categorías, siempre con confirmación antes de borrar.</p>
-                </article>
-                <article class="tarjeta">
-                    <span class="icono">🧹</span>
-                    <h3>Limpieza de mensajes</h3>
-                    <p>Purga mensajes de bots o de todos con un menú seguro. Respeta los mensajes fijados.</p>
+                    <h3>Sin permisos de admin</h3>
+                    <p>Solo pide los permisos mínimos necesarios. Nunca expulsa, banea ni modifica roles.</p>
                 </article>
             </div>
         </section>
 
         <section class="cristal" aria-labelledby="t-comandos">
-            <h2 id="t-comandos">💬 Comandos principales <small>escribe / en Discord</small></h2>
+            <h2 id="t-comandos">💬 Comandos <small>escribe / en Discord</small></h2>
             <div class="comandos">
-                <div class="comando"><code>/ia</code><span>Conversa con Meowly y hazle cualquier pregunta.</span></div>
-                <div class="comando"><code>/resumen</code><span>Resume la actividad del canal (por mensajes, tiempo, fecha o persona).</span></div>
-                <div class="comando"><code>/fuente</code><span>Escanea, guarda y aplica tipografías a canales y categorías.</span></div>
-                <div class="comando"><code>/gestionar</code><span>Crea, renombra y elimina canales y categorías.</span></div>
-                <div class="comando"><code>/purge</code><span>Elimina mensajes del canal con un menú interactivo.</span></div>
+                <div class="comando"><code>/ia</code><span>Conversa con Meowly. Mantiene memoria y busca en la web si hace falta.</span></div>
+                <div class="comando"><code>/crear</code><span>Panel para crear un canal o categoría con una fuente aplicada.</span></div>
+                <div class="comando"><code>/gestionar</code><span>Panel para aplicar una fuente a un canal o categoría existente.</span></div>
+                <div class="comando"><code>/escanear</code><span>Panel para detectar y guardar la tipografía de un canal o categoría.</span></div>
                 <div class="comando"><code>/help</code><span>Guía completa: qué hace cada comando y qué permisos necesita.</span></div>
             </div>
         </section>
@@ -223,12 +278,12 @@ HTML_TEMPLATE = """<!DOCTYPE html>
                 <span class="chip">Enviar mensajes</span>
                 <span class="chip">Insertar enlaces</span>
                 <span class="chip">Leer historial de mensajes</span>
-                <span class="chip">Gestionar mensajes</span>
                 <span class="chip">Gestionar canales</span>
             </div>
             <p class="aviso">
-                No pide permisos de administrador, ni de expulsar o banear. Los comandos de gestión solo los puede usar
-                quien tenga <b>Gestionar canales</b> o <b>Gestionar mensajes</b> en tu servidor.
+                No pide permisos de administrador, ni de expulsar o banear, ni de gestionar mensajes.
+                Los comandos de tipografías solo los puede usar quien tenga <b>Gestionar canales</b> en tu servidor,
+                y siempre respetando los permisos por canal.
             </p>
         </section>
 
