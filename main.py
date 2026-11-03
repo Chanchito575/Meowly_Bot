@@ -49,7 +49,7 @@ CLAVES_IA = {
 
 MODELOS_IA = {
     "Groq": os.getenv("MODELO_GROQ", "openai/gpt-oss-120b"),
-    "Qwen (OpenRouter)": os.getenv("MODELO_QWEN", "qwen/qwen3-coder:free"),
+    "Qwen (OpenRouter)": os.getenv("MODELO_QWEN", "qwen/qwen3.6-plus:free"),
     "Zai (GLM)": os.getenv("MODELO_ZAI", "glm-4.7-flash"),
 }
 
