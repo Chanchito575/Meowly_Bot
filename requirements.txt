@@ -1,7 +1,6 @@
-discord.py>=2.4.0
-openai>=1.40.0
-groq
-Flask
-aiohttp
-firebase-admin
-ddgs
+discord.py>=2.7.0
+openai>=3.40.0
+groq>=1.7.0
+ddgs>=9.16.0
+Flask>=3.1.0
+firebase-admin>=7.7.0
