@@ -17,22 +17,19 @@ except Exception as _e:
 OWNER_ID_POR_DEFECTO = 1481047586457518141
 
 MODELO_GROQ = os.getenv("MODELO_GROQ", "openai/gpt-oss-120b")
-MODELO_MISTRAL = os.getenv("MODELO_MISTRAL", "mistral-small-latest")
-MODELO_QWEN = os.getenv("MODELO_QWEN", "Qwen/Qwen2.5-72B-Instruct")
-MODELO_ZAI = os.getenv("MODELO_ZAI", "glm-4-flash")
+MODELO_QWEN = os.getenv("MODELO_QWEN", "qwen/qwen3-next-80b-a3b-instruct:free")
+MODELO_ZAI = os.getenv("MODELO_ZAI", "glm-4.7-flash")
 
 PERMISOS_BOT = (
     ("view_channel", "Ver canal"),
     ("send_messages", "Enviar mensajes"),
     ("embed_links", "Insertar enlaces"),
     ("read_message_history", "Leer historial"),
-    ("manage_messages", "Gestionar mensajes"),
     ("manage_channels", "Gestionar canales"),
 )
 
 PERMISOS_NOMBRE = {
     None: "Ninguno (cualquiera puede usarlo)",
-    "manage_messages": "Gestionar mensajes",
     "manage_channels": "Gestionar canales",
     "administrator": "Administrador",
     "owner": "Ser el dueño del bot",
@@ -41,7 +38,7 @@ PERMISOS_NOMBRE = {
 PAGINAS = {
     "ia": (
         "🐱", "Inteligencia Artificial",
-        "Meowly usa 4 IAs con respaldo automático: **Groq → Mistral → Qwen → Zai**. "
+        "Meowly usa 2 IAs con respaldo automático: **Groq → Qwen (OpenRouter)**. "
         "Recuerda tu conversación 40 minutos y consulta la web si preguntas por actualidad.",
         [
             ("/ia <mensaje>",
@@ -53,7 +50,8 @@ PAGINAS = {
     "fuentes": (
         "🎨", "Fuentes e identidad visual",
         "Paneles interactivos con botones para crear, aplicar y escanear tipografías. "
-        "Las fuentes se guardan en Firebase (máximo 25 locales por servidor).",
+        "Las fuentes se guardan en Firebase (máximo 25 locales por servidor). "
+        "El escaneo usa **Zai (GLM)** como mapeador y **Groq** como respaldo.",
         [
             ("/crear",
              "Abre un panel: `[Canal]` `[Categoría]` → `[Global]` `[Local]` → elegir fuente → "
@@ -80,7 +78,7 @@ PAGINAS = {
 
 COMANDO_DUENO = (
     "/testear",
-    "Diagnóstico privado: latencia, Firestore, búsqueda web, las 4 APIs de IA (prueba real), "
+    "Diagnóstico privado: latencia, Firestore, búsqueda web, las 3 APIs de IA (Groq, Qwen/OpenRouter, Zai — prueba real), "
     "módulos cargados, permisos del bot e intent Message Content.",
     "owner", "Insertar enlaces",
 )
@@ -160,7 +158,7 @@ class Utilidades(commands.Cog):
                 "🔒 Te falta el permiso necesario\n"
                 "**Requiere** = permiso tuyo · **Bot necesita** = permiso de Meowly\n\n"
                 "**Permisos del bot:** Ver canales, Enviar mensajes, Insertar enlaces, "
-                "Leer historial, Gestionar mensajes y Gestionar canales. "
+                "Leer historial y Gestionar canales. "
                 "El intent **Message Content** debe estar activado en el Developer Portal."
             ),
             inline=False,
@@ -237,8 +235,7 @@ class Utilidades(commands.Cog):
         clientes_ia = []
         if ia_cog:
             clientes_ia.append(("Groq", ia_cog.groq_client, MODELO_GROQ))
-            clientes_ia.append(("Mistral", ia_cog.mistral_client, MODELO_MISTRAL))
-            clientes_ia.append(("Qwen (HF)", ia_cog.hf_client, MODELO_QWEN))
+            clientes_ia.append(("Qwen (OpenRouter)", ia_cog.hf_client, MODELO_QWEN))
         if fuentes_cog:
             clientes_ia.append(("Zai (GLM)", fuentes_cog.zai_client, MODELO_ZAI))
 
