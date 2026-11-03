@@ -15,9 +15,9 @@ try:
 except ImportError:
     firestore = None
 
-MODELO_ZAI = os.getenv("MODELO_ZAI", "glm-4-flash")
-MODELO_GROQ = os.getenv("MODELO_GROQ", "openai/gpt-oss-20b")
-MODELO_GROQ_RESPALDO = os.getenv("MODELO_GROQ_RESPALDO", "openai/gpt-oss-20b")
+MODELO_ZAI = os.getenv("MODELO_ZAI", "glm-4.7-flash")
+MODELO_GROQ_COMPARADOR = os.getenv("MODELO_GROQ_COMPARADOR", "openai/gpt-oss-20b")
+MODELO_GROQ_MAPEADOR = os.getenv("MODELO_GROQ_MAPEADOR", "openai/gpt-oss-20b")
 
 MAX_FUENTES = 25
 CACHE_TTL = 30.0
@@ -386,7 +386,7 @@ class VistaEscanearSelect(discord.ui.View):
         return True
 
     async def on_select(self, interaction: discord.Interaction):
-        ch = interaction.guild.get_channel(interaction.data["values"][0])
+        ch = interaction.guild.get_channel(int(interaction.data["values"][0]))
         if ch is None:
             return await interaction.response.send_message("❌ Elemento no encontrado.", ephemeral=True)
         modal = ModalEscanear(self.cog, ch, self.autor_id)
@@ -605,7 +605,7 @@ class Fuentes(commands.Cog):
         async def callback(inter: discord.Interaction):
             if inter.user.id != autor_id:
                 return await inter.response.send_message("❌ Este menú no es tuyo.", ephemeral=True)
-            target = inter.guild.get_channel(inter.data["values"][0])
+            target = inter.guild.get_channel(int(inter.data["values"][0]))
             if target is None:
                 return await inter.response.send_message("❌ Elemento no encontrado.", ephemeral=True)
             await inter.response.defer(ephemeral=True)
@@ -671,7 +671,7 @@ class Fuentes(commands.Cog):
         )
         try:
             resp = await self.groq_client.chat.completions.create(
-                model=MODELO_GROQ_RESPALDO, messages=[{"role": "user", "content": prompt}], temperature=0.1, max_tokens=3000
+                model=MODELO_GROQ_MAPEADOR, messages=[{"role": "user", "content": prompt}], temperature=0.1, max_tokens=3000
             )
             mapeo = self._validar_mapeo(self._limpiar_json(resp.choices[0].message.content))
             if mapeo:
@@ -695,7 +695,7 @@ class Fuentes(commands.Cog):
         )
         try:
             resp = await self.groq_client.chat.completions.create(
-                model=MODELO_GROQ, messages=[{"role": "user", "content": prompt}], temperature=0.0, max_tokens=200
+                model=MODELO_GROQ_COMPARADOR, messages=[{"role": "user", "content": prompt}], temperature=0.0, max_tokens=200
             )
             texto = resp.choices[0].message.content.strip()
             for nombre in globales:
